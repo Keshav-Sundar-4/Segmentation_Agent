@@ -1,0 +1,12 @@
+name: biovision-napari
+display_name: BioVision Segmentation
+contributions:
+  commands:
+    - id: biovision-napari.open_main_widget
+      title: Open BioVision Panel
+      python_name: biovision_napari.ui.main_widget:BioVisionWidget
+
+  widgets:
+    - command: biovision-napari.open_main_widget
+      display_name: BioVision Panel
+      autogenerate: false

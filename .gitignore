@@ -1,0 +1,42 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Virtual environments / conda
+.venv/
+venv/
+env/
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+
+# IDE / editor
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Claude Code session data
+.claude/
+
+# Large binary data — keep masks and volumes out of git
+data/
+scripts/
+
+# Sensitive config
+.env
+*.env
+
+# OS
+.DS_Store
+Thumbs.db

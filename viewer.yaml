@@ -1,0 +1,81 @@
+# viewer.yaml — BioVision napari plugin configuration
+# This file controls the GUI, sample discovery, label layers, and LLM integration.
+# The agent pipeline is configured separately in project.yaml.
+
+project:
+  name: "my_project"
+  description: "Multimodal segmentation project"
+  owner: "James DiMartino"
+  created: "2026-02-28"
+  version: "0.1"
+
+paths:
+  dataset_root: "./data"
+  masks: "./data/masks"       # GT root; versions saved at ./data/masks/versions/v0001/
+  output_root: "./runs"
+  cache_root: "./.cache"
+
+viewer:
+  axis_order: "TZYX"          # Default axis order. Override per-sample if needed.
+  default_colormap: "gray"
+
+samples:
+  discovery: "subdirectory"   # Each subdir of dataset_root is one sample
+  status_file: "status.json"  # Written into each sample directory
+
+# Label layers are created in the viewer for ground truth editing.
+# Classes are shared across all layers. Users can add classes interactively.
+label_layers:
+  - name: "cells"
+    color: "#ff4444"
+    opacity: 0.5
+    classes:
+      - "background"
+      - "cell"
+  - name: "nuclei"
+    color: "#4444ff"
+    opacity: 0.5
+    classes:
+      - "background"
+      - "nucleus"
+  - name: "mitochondria"
+    color: "#44ff44"
+    opacity: 0.5
+    classes:
+      - "background"
+      - "mitochondrion"
+  - name: "organelles"
+    color: "#ffaa00"
+    opacity: 0.5
+    classes:
+      - "background"
+      - "organelle"
+
+io:
+  # Supported: zarr, tif, tiff, n5, h5, hdf5, czi, lif, nd2, ome.tiff
+  image_glob: "**/*.tif"
+  axes_override: null          # null = use viewer.axis_order for all samples
+
+agent:
+  command: "python run_agent.py"
+  working_dir: "."
+
+llm:
+  provider: "anthropic"        # anthropic | openai | ollama
+  model: "claude-opus-4-6"
+  api_key_env: "ANTHROPIC_API_KEY"
+  base_url: null               # Set for openai-compatible local servers (e.g. ollama)
+  system_prompt: >
+    You are a BioVision assistant. Help the user configure their segmentation workflow.
+    You can suggest and apply changes to viewer.yaml. When proposing a config change,
+    output a YAML block tagged ```yaml-patch containing only the keys to update.
+    Example: to add a label layer, output:
+    ```yaml-patch
+    label_layers:
+      - name: "new_layer"
+        color: "#ff00ff"
+        classes: ["background", "object"]
+    ```
+
+# Bookmarks are persisted here automatically.
+bookmarks: []
