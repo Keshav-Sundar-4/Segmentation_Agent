@@ -32,7 +32,7 @@ load_dotenv()
 # Provider → sensible default model (cheap + fast first)
 # ---------------------------------------------------------------------------
 _PROVIDER_DEFAULTS: dict[str, str] = {
-    "anthropic": "claude-haiku-4-5-20251001",   # cheap, fast, very capable
+    "anthropic": "claude-3-5-haiku-latest",      # fast, cost-efficient default
     "groq":      "llama-3.3-70b-versatile",      # free tier, ~330 tok/s
     "openai":    "gpt-4o-mini",
     "ollama":    "llama3.2",                      # local, free

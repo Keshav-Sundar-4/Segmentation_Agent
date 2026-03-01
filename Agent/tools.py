@@ -28,6 +28,25 @@ from langchain_experimental.tools import PythonREPLTool
 if TYPE_CHECKING:
     from config import AgentConfig
 
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Standalone REPL helper  (used by nodes.py — no tool-class overhead needed)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def exec_repl(code: str) -> str:
+    """
+    Execute *code* in a fresh PythonREPLTool session and return combined
+    stdout/stderr as a string.
+
+    This is a plain function (not a LangChain tool) used directly by node
+    functions that need to run code without the agent loop overhead.
+    """
+    repl = PythonREPLTool()
+    try:
+        return repl._run(code) or ""
+    except Exception as exc:
+        return f"REPL error: {exc}"
+
 logger = logging.getLogger(__name__)
 
 _SEP = "─" * 60
