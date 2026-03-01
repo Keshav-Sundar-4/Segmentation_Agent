@@ -1,0 +1,23 @@
+# Secrets — never commit
+.env
+*.env
+secrets.yaml
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.so
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Claude Code session data
+.claude/
+
+# OS
+.DS_Store
+Thumbs.db
