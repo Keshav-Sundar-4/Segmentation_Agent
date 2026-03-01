@@ -35,6 +35,11 @@ dependencies = [
     "imagecodecs",    # additional tiff compression codecs
     "anthropic",      # LLM chat (Anthropic)
     "openai",         # LLM chat (OpenAI-compatible)
+    "langchain-anthropic",
+    "langchain-experimental",
+    "langchain-community",
+    "langgraph>=0.2.0",
+    "duckduckgo-search",
 ]
 
 [project.optional-dependencies]

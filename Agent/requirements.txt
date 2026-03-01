@@ -1,9 +1,33 @@
+# ── Core LangChain stack ─────────────────────────────────────────────────────
 langchain
 langchain-experimental
-langchain-anthropic
+langchain-community          # DuckDuckGo + Tavily search tools
+
+# ── LLM providers (install whichever you use; all are lightweight) ────────────
+langchain-anthropic           # Claude  — ANTHROPIC_API_KEY
+langchain-groq                # Groq    — GROQ_API_KEY      (fast, free tier)
+langchain-openai              # OpenAI  — OPENAI_API_KEY
+langchain-ollama              # Ollama  — no key (local models)
+
+# ── Environment ───────────────────────────────────────────────────────────────
 python-dotenv
+
+# ── Image processing ─────────────────────────────────────────────────────────
 opencv-python
 scikit-image
 scipy
 numpy
 matplotlib
+
+# ── Web server (HITL interface) ───────────────────────────────────────────────
+fastapi
+uvicorn[standard]
+python-multipart
+pyyaml
+
+# ── Agentic workflow ──────────────────────────────────────────────────────────
+langgraph>=0.2.0              # HITL state machine + interrupt/resume
+
+# ── Search tools ──────────────────────────────────────────────────────────────
+duckduckgo-search             # free, no key needed
+# tavily-python               # optional: set TAVILY_API_KEY in .env

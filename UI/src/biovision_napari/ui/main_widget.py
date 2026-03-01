@@ -99,7 +99,7 @@ class BioVisionWidget(QWidget):
         tabs.addTab(self._bookmarks, "Bookmarks")
 
         # --- Agent tab ---
-        self._agent_panel = AgentPanel(self._state)
+        self._agent_panel = AgentPanel(self._viewer, self._state)
         self._agent_panel.agent_finished.connect(self._browser._refresh)
         tabs.addTab(self._agent_panel, "Agent")
 
