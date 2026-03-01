@@ -3,7 +3,7 @@ BioVision — Unconstrained REPL-Driven Image Preprocessing Agent
 ----------------------------------------------------------------
 Reads a user-supplied image folder and metadata file, then spins up a
 LangChain ReAct agent that dynamically writes, executes, and debugs
-three image-processing pipelines entirely through a Python REPL.
+as many image-processing pipelines as the metadata warrants.
 """
 
 import logging
@@ -34,8 +34,10 @@ REACT_PROMPT_TEMPLATE = """\
 You are an expert image-processing AI engineer specialising in scientific,
 medical, and remote-sensing image datasets.
 
-Your mission: analyse the supplied dataset metadata and execute THREE distinct,
-optimal preprocessing pipelines through the Python REPL tool.
+Your mission: analyse the supplied dataset metadata and decide how many
+preprocessing pipelines are genuinely warranted by the data, then execute
+each one through the Python REPL tool. Let the metadata — not a fixed number
+— drive how many pipelines you create.
 
 ════════════════════════════════════════════════════════════════
 STRICT GUARDRAILS — YOU MUST FOLLOW THESE AT ALL TIMES
@@ -71,13 +73,21 @@ STRICT GUARDRAILS — YOU MUST FOLLOW THESE AT ALL TIMES
    • After three failures, print "PIPELINE N FAILED: <reason>" and
      continue to the next pipeline.  Do not loop endlessly.
 
-5. PIPELINE DIVERSITY
-   • The three pipelines must use meaningfully different algorithmic
-     approaches tailored to the domain inferred from the metadata.
-   • Example distinct approaches: contrast-limited adaptive histogram
-     equalisation (CLAHE) + Otsu thresholding; Gaussian/bilateral
+5. PIPELINE COUNT & DIVERSITY
+   • Read the metadata carefully and determine how many pipelines the
+     dataset genuinely needs — this could be two, five, or more.
+   • Ask yourself: does this domain have distinct preprocessing challenges
+     (noise, contrast, colour, artefacts, resolution, channel separation…)?
+     Each distinct challenge that benefits from its own treatment warrants
+     its own pipeline.
+   • Every pipeline must use a meaningfully different algorithmic approach
+     tailored to what the metadata reveals about the data's domain and
+     quality issues.
+   • Example approaches: CLAHE + Otsu thresholding; Gaussian/bilateral
      denoising + adaptive thresholding; anisotropic diffusion +
-     morphological operations; colour-space transforms + edge sharpening.
+     morphological operations; colour-space transforms + edge sharpening;
+     background subtraction; channel normalisation; tiling/patching for
+     high-resolution data — use whichever subset is actually relevant.
 
 6. EFFICIENCY
    • Process images with a for-loop; do not load all images at once.
@@ -88,14 +98,16 @@ WORKFLOW
 ════════════════════════════════════════════════════════════════
 
 Step 1 — Analyse metadata
-  • Read the metadata (provided below in the task) and determine:
+  • Read the metadata and determine:
     – Image domain / modality (satellite, histology, fluorescence, …)
-    – Likely artefacts and challenges
-    – Three complementary pipeline strategies
+    – Likely artefacts, quality issues, and processing challenges
+    – How many pipelines are warranted and what each one should achieve
+  • State your reasoning: "Based on the metadata I will run N pipelines
+    because …"
 
-Step 2 — Execute each pipeline
-  For pipeline 1, 2, 3:
-    a. State the pipeline's purpose and steps.
+Step 2 — Execute each pipeline in turn
+  For each pipeline you decided on:
+    a. State its number, name, purpose, and algorithmic steps.
     b. Write the complete Python script.
     c. Execute it via the REPL.
     d. On error: debug and retry (≤ 3 attempts total).
@@ -160,10 +172,10 @@ def build_task(input_folder: Path, metadata_text: str) -> str:
     return (
         f"INPUT FOLDER: {input_folder}\n\n"
         f"DATASET METADATA:\n{metadata_text}\n\n"
-        "Analyse the metadata, then execute THREE distinct preprocessing "
-        "pipelines. Write and run a complete Python script for each pipeline "
-        "via the Python REPL. Save all outputs into descriptive subfolders "
-        "inside the `outputs/` directory."
+        "Analyse the metadata and decide how many preprocessing pipelines "
+        "the dataset warrants — let the data guide the number. Write and run "
+        "a complete Python script for each pipeline via the Python REPL. "
+        "Save all outputs into descriptive subfolders inside the `outputs/` directory."
     )
 
 
@@ -214,7 +226,7 @@ def main() -> None:
         agent=agent,
         tools=tools,
         verbose=True,          # shows Thought / Action / Observation
-        max_iterations=40,     # generous ceiling for 3 pipelines × 3 retries
+        max_iterations=60,     # ceiling scales with open-ended pipeline count
         handle_parsing_errors=True,
         return_intermediate_steps=False,
     )
