@@ -18,6 +18,15 @@ build/
 # Claude Code session data
 .claude/
 
+# Virtual environments
+venv/
+.venv/
+env/
+.env/
+
+# Agent outputs (generated at runtime)
+outputs/
+
 # OS
 .DS_Store
 Thumbs.db

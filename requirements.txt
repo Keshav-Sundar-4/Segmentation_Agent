@@ -1,0 +1,9 @@
+langchain
+langchain-experimental
+langchain-anthropic
+python-dotenv
+opencv-python
+scikit-image
+scipy
+numpy
+matplotlib
