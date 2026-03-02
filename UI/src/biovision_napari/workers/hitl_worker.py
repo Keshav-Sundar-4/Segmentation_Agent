@@ -1,8 +1,8 @@
 """
-hitl_worker.py — napari thread_worker bridge for the LangGraph HITL agent.
+hitl_worker.py — napari thread_worker bridge for the BioVision pipeline.
 
-This worker drives HITLRunner.run() and communicates with the Qt main thread
-via napari's GeneratorWorker protocol:
+This worker drives PipelineRunner.run() and communicates with the Qt main
+thread via napari's GeneratorWorker protocol:
 
   Yields (kind, payload) tuples → emitted as the `yielded` signal on main thread:
     ("log",      str)   — a log line for the UI text area
@@ -13,7 +13,7 @@ via napari's GeneratorWorker protocol:
   Receives decisions via GeneratorWorker.send(value):
     After yielding ("review", …), the worker suspends.
     The UI calls worker.send({"action": "accept"|"reject", "feedback": str})
-    to resume it and forward the decision into HITLRunner.
+    to resume it and forward the decision into PipelineRunner.
 """
 
 from __future__ import annotations
@@ -31,20 +31,17 @@ logger = logging.getLogger(__name__)
 # the UI package was installed.
 # ---------------------------------------------------------------------------
 
+
 def _ensure_agent_on_path() -> bool:
     """
     Walk up from this file's location to find the repo's Agent/ directory and
-    prepend it to sys.path so that `import hitl_agent` succeeds.
-    Returns True on success.
+    prepend it to sys.path so that `from core.pipeline import PipelineRunner`
+    succeeds.  Returns True on success.
     """
-    # Expected layout:
-    #   <repo>/
-    #     Agent/hitl_agent.py      ← target
-    #     UI/src/biovision_napari/workers/hitl_worker.py  ← __file__
     start = Path(__file__).resolve()
     for parent in [start, *start.parents]:
         candidate = parent / "Agent"
-        if candidate.is_dir() and (candidate / "hitl_agent.py").exists():
+        if candidate.is_dir() and (candidate / "core" / "pipeline.py").exists():
             if str(candidate) not in sys.path:
                 sys.path.insert(0, str(candidate))
             return True
@@ -65,7 +62,7 @@ def hitl_worker(
     output_root: str = "outputs",
 ):
     """
-    Background GeneratorWorker that runs the LangGraph HITL agent.
+    Background GeneratorWorker that runs the BioVision pipeline agent.
 
     Parameters
     ----------
@@ -81,13 +78,14 @@ def hitl_worker(
     """
     # ── Bootstrap import ───────────────────────────────────────────────────
     if not _ensure_agent_on_path():
-        yield ("error", "Cannot locate Agent/hitl_agent.py. Check repository layout.")
+        yield ("error", "Cannot locate Agent/core/pipeline.py. Check repository layout.")
         return
 
     try:
-        from hitl_agent import HITLRunner  # noqa: PLC0415
+        from core.pipeline import PipelineRunner                    # noqa: PLC0415
+        from agents.preprocessing.agent import PreprocessingAgent   # noqa: PLC0415
     except ImportError as exc:
-        yield ("error", f"Failed to import hitl_agent: {exc}")
+        yield ("error", f"Failed to import pipeline modules: {exc}")
         return
 
     # ── Read metadata ──────────────────────────────────────────────────────
@@ -107,12 +105,17 @@ def hitl_worker(
         return
 
     # ── Build runner ───────────────────────────────────────────────────────
-    yield ("log", "Initialising LangGraph HITL agent…")
+    yield ("log", "Initialising pipeline agent…")
     try:
-        runner = HITLRunner(
-            api_key=api_key,
-            sample_size=sample_size,
-            output_root=out_root,
+        runner = (
+            PipelineRunner(
+                api_key=api_key,
+                sample_size=sample_size,
+                output_root=out_root,
+            )
+            .add_agent(PreprocessingAgent())
+            .with_hitl()
+            .build()
         )
     except Exception as exc:
         yield ("error", f"Failed to initialise agent: {exc}")
@@ -136,7 +139,7 @@ def hitl_worker(
             break
         except Exception as exc:
             yield ("error", f"Agent error: {exc}")
-            logger.exception("Unhandled error in HITL agent")
+            logger.exception("Unhandled error in pipeline agent")
             return
 
         kind, payload = event
@@ -155,7 +158,7 @@ def hitl_worker(
                 # Worker was stopped (e.g. Stop button) while awaiting review
                 return
 
-            # Forward decision to the LangGraph runner on next iteration
+            # Forward decision to the PipelineRunner on next iteration
             value_to_send = decision
 
         elif kind == "done":
@@ -163,5 +166,4 @@ def hitl_worker(
             return
 
         else:
-            # Unknown event kind — log and continue
             yield ("log", f"[unknown event '{kind}'] {payload}")

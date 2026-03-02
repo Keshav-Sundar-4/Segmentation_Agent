@@ -176,7 +176,7 @@ class AgentPanel(QWidget):
         layout = QVBoxLayout(self._review_widget)
         layout.setContentsMargins(0, 0, 0, 0)
 
-        grp = QGroupBox("Human Review — Evaluate the Mini-Batch")
+        grp = QGroupBox("Human Review — Evaluate the Mini-Batch Preview")
         inner = QVBoxLayout(grp)
 
         self._lbl_technique_name = QLabel()
@@ -344,11 +344,30 @@ class AgentPanel(QWidget):
     # Worker event dispatch
     # ──────────────────────────────────────────────────────────────────────────
 
+    # ── Phase detection from log messages ────────────────────────────────────
+
+    _PHASE_PATTERNS = [
+        ("Loaded",                     "loading images…"),
+        ("Technique selected",         "researching technique…"),
+        ("Code generated",             "code ready — running preview…"),
+        ("Code generation failed",     "code generation failed"),
+        ("Mini-batch:",                "preview complete — awaiting review"),
+        ("Full dataset processing",    "full run complete"),
+        ("Technique rejected",         "rethinking technique…"),
+    ]
+
+    def _detect_phase(self, msg: str) -> None:
+        for keyword, label in self._PHASE_PATTERNS:
+            if keyword in msg:
+                self._set_status(label)
+                return
+
     def _on_yield(self, event: tuple) -> None:
         kind, payload = event
 
         if kind == "log":
             self._append_log(str(payload))
+            self._detect_phase(str(payload))
 
         elif kind == "error":
             self._append_log(f"ERROR: {payload}", error=True)

@@ -1,10 +1,12 @@
 """
-Image discovery and mini-batch sampling utilities.
+tools/sampler.py — Image discovery and deterministic mini-batch sampling.
 
-Used during the HITL evaluation phase to select a small, representative
+Used during the HITL preview phase to select a small, representative
 subset of images so the agent can demonstrate a technique cheaply before
 the user decides whether to apply it to the full dataset.
 """
+
+from __future__ import annotations
 
 import random
 from pathlib import Path
@@ -29,11 +31,12 @@ def sample_images(folder: Path, n: int = 5, seed: int = 42) -> List[Path]:
     Return up to *n* randomly sampled image paths from *folder*.
 
     Uses a fixed *seed* so the same subset is evaluated across retries
-    within a single session (ensuring apples-to-apples comparison when
-    the user rejects a technique and a new one is tried).
+    within a single session (apples-to-apples comparison when the user
+    rejects a technique and a new one is tried).
 
-    Raises:
-        ValueError: if no images are found in *folder*.
+    Raises
+    ──────
+    ValueError  if no images are found in *folder*.
     """
     images = discover_images(folder)
     if not images:
