@@ -84,6 +84,7 @@ def hitl_worker(
     try:
         from core.pipeline import PipelineRunner                    # noqa: PLC0415
         from agents.preprocessing.agent import PreprocessingAgent   # noqa: PLC0415
+        from agents.coding.agent import CodingAgent                 # noqa: PLC0415
     except ImportError as exc:
         yield ("error", f"Failed to import pipeline modules: {exc}")
         return
@@ -113,8 +114,9 @@ def hitl_worker(
                 sample_size=sample_size,
                 output_root=out_root,
             )
-            .add_agent(PreprocessingAgent())
-            .with_hitl()
+            .add_agent(PreprocessingAgent())          # load + research only
+            .add_agent(CodingAgent())                 # codegen + preview + full run
+            .with_hitl(on_reject="prep_research")     # rejection → back to research
             .build()
         )
     except Exception as exc:

@@ -29,7 +29,7 @@ from typing_extensions import TypedDict
 # Pipeline-wide constants (single source of truth)
 # ─────────────────────────────────────────────────────────────────────────────
 
-MAX_CODE_RETRIES:    int = 3      # internal retry loop in prep_codegen_node
+MAX_CODE_RETRIES:    int = 3      # internal retry loop in code_generate_node
 MAX_REJECTIONS:      int = 3      # user rejections before the graph gives up
 METADATA_CHAR_LIMIT: int = 3000  # truncate metadata before sending to LLM
 
@@ -71,11 +71,13 @@ class PipelineState(TypedDict):
     hitl_feedback:        Optional[str]      # free-text from the user
     hitl_rejection_count: int                # incremented per rejection
 
-    # ── PreprocessingAgent fields ─────────────────────────────────────────
+    # ── PreprocessingAgent fields (research-only) ─────────────────────────
     prep_technique_name:        str
     prep_technique_description: str
-    prep_technique_code:        str          # single-image script using INPUT_PATH/OUTPUT_PATH
     prep_batch_paths:           List[str]    # fixed-seed mini-batch image paths
-    prep_batch_results:         List[dict]   # [{original_path, processed_path, success}]
-    prep_code_retries:          int          # attempts used in current codegen loop
-    prep_last_error:            Optional[str]
+
+    # ── CodingAgent fields ────────────────────────────────────────────────
+    code_script:        str                  # single-image script using INPUT_PATH/OUTPUT_PATH
+    code_batch_results: List[dict]           # [{original_path, processed_path, success}]
+    code_retries:       int                  # attempts used in current codegen loop
+    code_last_error:    Optional[str]

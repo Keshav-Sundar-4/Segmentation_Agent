@@ -5,11 +5,13 @@ Primary public API
 ──────────────────
     from core.pipeline import PipelineRunner
     from agents.preprocessing.agent import PreprocessingAgent
+    from agents.coding.agent import CodingAgent
 
     runner = (
         PipelineRunner(api_key="sk-ant-...", sample_size=5)
-        .add_agent(PreprocessingAgent())
-        .with_hitl()
+        .add_agent(PreprocessingAgent())          # load + research only
+        .add_agent(CodingAgent())                 # codegen + preview + full run
+        .with_hitl(on_reject="prep_research")     # rejection → back to research
         .build()
     )
     gen = runner.run(input_folder="/data/images", metadata_content="...")
@@ -37,10 +39,14 @@ Package layout
             human_review.py  — HumanReviewHook (injectable HITL gate)
     agents/
         preprocessing/
-            agent.py    — PreprocessingAgent(BaseAgent)
-            nodes.py    — 5 pure node functions
+            agent.py    — PreprocessingAgent(BaseAgent)  — research only
+            nodes.py    — 2 pure node functions (load, research)
+        coding/
+            agent.py    — CodingAgent(BaseAgent)
+            nodes.py    — 3 pure node functions (generate, preview, full_run)
     tools/
         repl.py         — exec_repl() + SafeLoggingREPLTool
+        sandbox.py      — exec_sandboxed() — auto-venv for missing packages
         search.py       — get_search_tool()
         sampler.py      — sample_images(), discover_images()
     config.py           — AgentConfig dataclass & multi-provider LLM builder
@@ -49,6 +55,7 @@ Package layout
 
 from core.pipeline import PipelineRunner
 from agents.preprocessing.agent import PreprocessingAgent
+from agents.coding.agent import CodingAgent
 from core.state import PipelineState
 
-__all__ = ["PipelineRunner", "PreprocessingAgent", "PipelineState"]
+__all__ = ["PipelineRunner", "PreprocessingAgent", "CodingAgent", "PipelineState"]

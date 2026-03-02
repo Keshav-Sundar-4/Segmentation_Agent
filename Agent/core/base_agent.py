@@ -63,7 +63,7 @@ HOW TO ADD A NEW AGENT
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
-from typing import ClassVar
+from typing import ClassVar, Optional
 
 from langgraph.graph import StateGraph
 
@@ -97,8 +97,8 @@ class BaseAgent(ABC):
     name:          ClassVar[str]
     entry_node:    ClassVar[str]
     retry_node:    ClassVar[str]
-    preview_node:  ClassVar[str]
-    full_run_node: ClassVar[str]
+    preview_node:  ClassVar[Optional[str]] = None  # None for research-only agents
+    full_run_node: ClassVar[Optional[str]] = None  # None for research-only agents
     exit_node:     ClassVar[str]
 
     @abstractmethod

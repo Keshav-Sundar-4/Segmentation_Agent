@@ -88,10 +88,10 @@ class PipelineRunner:
         self._output_root = str(output_root)
 
         self._graph = StateGraph(PipelineState)
-        self._agents: List[BaseAgent]           = []
-        self._hitl_flags: List[bool]            = []   # parallel list to _agents
-        self._compiled_graph                    = None
-        self._config: dict                      = {}
+        self._agents: List[BaseAgent]                = []
+        self._hitl_configs: List[Optional[dict]]     = []   # parallel list to _agents; None = no HITL
+        self._compiled_graph                         = None
+        self._config: dict                           = {}
 
     # ── Builder API ────────────────────────────────────────────────────────
 
@@ -99,20 +99,37 @@ class PipelineRunner:
         """Register *agent*'s nodes in the graph and queue it for wiring."""
         agent.register(self._graph)
         self._agents.append(agent)
-        self._hitl_flags.append(False)
+        self._hitl_configs.append(None)
         return self
 
-    def with_hitl(self, max_rejections: int = 3) -> "PipelineRunner":
+    def with_hitl(
+        self,
+        max_rejections: int = 3,
+        on_reject: Optional[str] = None,
+    ) -> "PipelineRunner":
         """
         Inject a HumanReviewHook for the most recently added agent.
 
-        The hook is inserted between that agent's preview_node and
-        full_run_node.  On rejection, the graph loops back to retry_node.
+        Parameters
+        ──────────
+        max_rejections  Graph ends after this many rejections.
+        on_reject       Optional node name to route to on rejection.
+                        Defaults to the agent's own retry_node.
+                        Pass a node from a *previous* agent to force
+                        the rejection to re-run that agent's logic
+                        (e.g. on_reject="prep_research").
         """
         if not self._agents:
             raise RuntimeError("Call add_agent() before with_hitl().")
-        self._hitl_flags[-1] = True
-        self._max_rejections  = max_rejections
+        agent = self._agents[-1]
+        if agent.preview_node is None:
+            raise RuntimeError(
+                f"Agent '{agent.name}' has no preview_node; cannot attach HITL."
+            )
+        self._hitl_configs[-1] = {
+            "max_rejections": max_rejections,
+            "on_reject":      on_reject,
+        }
         return self
 
     def build(self) -> "PipelineRunner":
@@ -136,7 +153,7 @@ class PipelineRunner:
         # ── Wire agent chain ────────────────────────────────────────────
         prev_exit: Optional[str] = None
 
-        for agent, use_hitl in zip(self._agents, self._hitl_flags):
+        for agent, hitl_config in zip(self._agents, self._hitl_configs):
             # Connect previous exit → this agent's entry (or START)
             if prev_exit is None:
                 self._graph.add_edge(START, agent.entry_node)
@@ -144,17 +161,21 @@ class PipelineRunner:
                 self._graph.add_edge(prev_exit, agent.entry_node)
 
             # Connect preview → full_run (directly or via HITL)
-            if use_hitl:
+            # Skip entirely for research-only agents (preview_node is None)
+            if agent.preview_node is None:
+                pass  # no preview/full_run wiring needed
+            elif hitl_config is not None:
+                on_reject = hitl_config["on_reject"] or agent.retry_node
                 hook = HumanReviewHook(
                     name=agent.name,
-                    max_rejections=getattr(self, "_max_rejections", 3),
+                    max_rejections=hitl_config["max_rejections"],
                     payload_fn=agent.review_payload,
                 )
                 hook.inject(
                     self._graph,
                     after=agent.preview_node,
                     on_accept=agent.full_run_node,
-                    on_reject=agent.retry_node,
+                    on_reject=on_reject,
                 )
             else:
                 self._graph.add_edge(agent.preview_node, agent.full_run_node)
