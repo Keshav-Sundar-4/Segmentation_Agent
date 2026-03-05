@@ -1,83 +1,52 @@
 """
-core/state.py — Shared PipelineState for the BioVision pipeline.
+PipelineState — the single source of truth passed between every graph node.
 
-Every LangGraph node reads from and writes to this TypedDict.
-
-Fields use a short prefix to identify which agent owns them:
-  (no prefix) — pipeline-wide inputs and cross-cutting fields
-  hitl_        — HITL gate state (injected by HumanReviewHook)
-  prep_        — PreprocessingAgent fields
-  seg_         — (future) SegmentationAgent
-  qc_          — (future) QCAgent
-
-To add state for a new agent, append a 4-line prefix block here and
-reference the new fields in your agent's nodes and initial_state().
-
-Fields marked Annotated[list, operator.add] are append-only (each node
-pushes new items; previous items are never lost). All other fields are
-simply overwritten by whichever node last set them.
+Design rules
+------------
+* All fields are primitives or plain collections so the MemorySaver
+  checkpointer can serialise them without custom codecs.
+* Pydantic models (PreprocessingPlan, GeneratedCode) are *not* stored directly;
+  their data is unpacked into typed scalar / list fields instead.
+* The `messages` field uses LangGraph's `add_messages` reducer so appends
+  from different nodes never clobber each other.
+* Add a new prefix block (e.g. `review_*`) here whenever you introduce a new
+  agent — keeps namespacing explicit and avoids key collisions.
 """
 
 from __future__ import annotations
 
-import operator
-from typing import Annotated, List, Optional
+from typing import Annotated, Optional
 
 from typing_extensions import TypedDict
 
-# ─────────────────────────────────────────────────────────────────────────────
-# Pipeline-wide constants (single source of truth)
-# ─────────────────────────────────────────────────────────────────────────────
+from langgraph.graph.message import add_messages
 
-MAX_CODE_RETRIES:    int = 3      # internal retry loop in code_generate_node
-MAX_REJECTIONS:      int = 3      # user rejections before the graph gives up
-METADATA_CHAR_LIMIT: int = 3000  # truncate metadata before sending to LLM
-
-IMAGE_EXTENSIONS: frozenset = frozenset(
-    {".jpg", ".jpeg", ".png", ".tif", ".tiff", ".bmp", ".gif", ".webp"}
-)
-
-
-# ─────────────────────────────────────────────────────────────────────────────
-# State schema
-# ─────────────────────────────────────────────────────────────────────────────
 
 class PipelineState(TypedDict):
-    """
-    Flat, namespaced shared state for the entire pipeline graph.
+    # ── Inputs (populated once by the caller; never mutated by nodes) ─────────
+    metadata_yaml: str          # raw YAML string from the Napari UI
+    input_dir: str              # absolute path to folder of raw images
+    output_dir: str             # absolute path where processed images are saved
+    api_key: str                # Anthropic API key (not logged / persisted)
 
-    All fields are optional at graph start; each node only touches
-    the fields it owns (returning a partial dict).
-    """
+    # ── Planner outputs ───────────────────────────────────────────────────────
+    plan_title: str             # short name for the preprocessing pipeline
+    plan_steps: list[str]       # ordered list of preprocessing instructions
+    plan_rationale: str         # why these steps maximise segmentation accuracy
 
-    # ── Pipeline-wide inputs ──────────────────────────────────────────────
-    input_folder:     str            # absolute path to the image directory
-    metadata_content: str            # YAML text (truncated before LLM use)
-    api_key:          str            # Anthropic API key — never logged
-    output_root:      str            # root directory for all outputs
-    sample_size:      int            # images in the mini-batch
+    # ── Coder outputs ─────────────────────────────────────────────────────────
+    generated_code: str         # complete, runnable Python script
+    code_dependencies: list[str]  # pip packages required by the script
 
-    # ── Cross-cutting: LLM conversation history ───────────────────────────
-    messages: Annotated[list, operator.add]  # accumulates Human+AI messages
+    # ── Executor outputs ──────────────────────────────────────────────────────
+    execution_stdout: str
+    execution_stderr: str
+    execution_success: bool
 
-    # ── Cross-cutting: progress log ───────────────────────────────────────
-    log: Annotated[list, operator.add]       # append-only; UI consumes this
+    # ── Control / retry tracking ──────────────────────────────────────────────
+    error: Optional[str]        # last error message; None when clean
+    retries: int                # how many times coder has been re-invoked
 
-    # ── Cross-cutting: final output ───────────────────────────────────────
-    final_output: Optional[str]              # path to final output directory
-
-    # ── HITL gate (written by HumanReviewHook nodes) ─────────────────────
-    hitl_decision:        Optional[str]      # "accept" | "reject"
-    hitl_feedback:        Optional[str]      # free-text from the user
-    hitl_rejection_count: int                # incremented per rejection
-
-    # ── PreprocessingAgent fields (research-only) ─────────────────────────
-    prep_technique_name:        str
-    prep_technique_description: str
-    prep_batch_paths:           List[str]    # fixed-seed mini-batch image paths
-
-    # ── CodingAgent fields ────────────────────────────────────────────────
-    code_script:        str                  # single-image script using INPUT_PATH/OUTPUT_PATH
-    code_batch_results: List[dict]           # [{original_path, processed_path, success}]
-    code_retries:       int                  # attempts used in current codegen loop
-    code_last_error:    Optional[str]
+    # ── Conversation trace ────────────────────────────────────────────────────
+    # add_messages reducer: each node can append without overwriting prior msgs
+    messages: Annotated[list, add_messages]

@@ -1,1 +1,1 @@
-"""agents — pluggable pipeline agent implementations."""
+# agents — pluggable LangGraph node functions

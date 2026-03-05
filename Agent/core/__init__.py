@@ -1,1 +1,1 @@
-"""core — shared infrastructure for the BioVision pipeline."""
+# core — shared state and schemas for the BioVision pipeline
