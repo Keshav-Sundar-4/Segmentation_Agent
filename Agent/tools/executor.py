@@ -47,13 +47,28 @@ def _ensure_dependencies(packages: list[str]) -> None:
     if not packages:
         return
 
+    # Map pip package names to their actual Python import names
+    import_mapping = {
+        "scikit-image": "skimage",
+        "opencv-python-headless": "cv2",
+        "opencv-python": "cv2",
+        "pillow": "PIL",
+        "pyyaml": "yaml",
+        "scikit-learn": "sklearn",
+    }
+
     missing: list[str] = []
     for pkg in packages:
-        # Normalise: 'scikit-image' → 'skimage', strip extras like 'pkg[extra]'
-        import_name = pkg.replace("-", "_").split("[")[0]
+        # Strip extras like 'pkg[extra]' and normalize to lowercase
+        base_pkg = pkg.split("[")[0].lower()
+        
+        # Check mapping first; fallback to replacing hyphens with underscores
+        import_name = import_mapping.get(base_pkg, base_pkg.replace("-", "_"))
+        
         try:
             __import__(import_name)
         except ImportError:
+            # Append the original package name for pip to install
             missing.append(pkg)
 
     if missing:
@@ -62,7 +77,6 @@ def _ensure_dependencies(packages: list[str]) -> None:
             [sys.executable, "-m", "pip", "install", "--quiet", *missing],
             timeout=120,
         )
-
 
 # ── Execution back-ends ───────────────────────────────────────────────────────
 
