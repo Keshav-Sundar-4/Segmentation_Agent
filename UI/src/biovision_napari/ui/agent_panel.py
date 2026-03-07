@@ -170,6 +170,17 @@ class AgentPanel(QWidget):
         self._worker = None
         self._ollama_worker = None
 
+        # Activity-indicator state (pulsing spinner shown while pipeline runs).
+        self._spinner_frames: list[str] = ["⠋","⠙","⠹","⠸","⠼","⠴","⠦","⠧","⠇","⠏"]
+        self._spinner_frame:  int = 0
+        self._activity_text:  str = ""
+        self._retry_count:    int = 0
+        self._activity_current: Optional[QLabel] = None
+        self._activity_layout:  Optional[QVBoxLayout] = None
+        self._activity_frame:   Optional[QFrame] = None
+        self._spinner_timer = QTimer(self)
+        self._spinner_timer.timeout.connect(self._pulse_spinner)
+
         # Current inputs (paths stored as absolute strings, never copied).
         self._yaml_path: str = ""
         self._input_dir: str = ""
@@ -192,6 +203,7 @@ class AgentPanel(QWidget):
         outer.addWidget(self._build_input_group())
         outer.addWidget(self._build_model_group())
         outer.addWidget(self._build_run_bar())
+        outer.addWidget(self._build_activity_widget())
         outer.addWidget(self._build_log())
 
     # ── Inputs group ──────────────────────────────────────────────────────────
@@ -340,6 +352,21 @@ class AgentPanel(QWidget):
         layout.addWidget(self._lbl_ollama_status)
 
         return page
+
+    # ── Activity indicator ────────────────────────────────────────────────────
+
+    def _build_activity_widget(self) -> QFrame:
+        """Compact pulsing-spinner area shown only while the pipeline is running."""
+        self._activity_frame = QFrame()
+        self._activity_frame.setStyleSheet(
+            "QFrame { border: 1px solid #2a2a2a; border-radius: 4px; "
+            "background: #1a1a1a; }"
+        )
+        self._activity_layout = QVBoxLayout(self._activity_frame)
+        self._activity_layout.setContentsMargins(8, 4, 8, 4)
+        self._activity_layout.setSpacing(2)
+        self._activity_frame.setVisible(False)
+        return self._activity_frame
 
     # ── Run bar ───────────────────────────────────────────────────────────────
 
@@ -502,6 +529,117 @@ class AgentPanel(QWidget):
         self._lbl_ollama_status.setStyleSheet("font-size: 10px; color: #aaa;")
         self._validate()
 
+    # ── Activity indicator helpers ────────────────────────────────────────────
+
+    def _start_activity(self, text: str) -> None:
+        """Show the activity widget, clear any previous lines, start the spinner."""
+        # Remove labels left over from a prior run.
+        while self._activity_layout.count():
+            item = self._activity_layout.takeAt(0)
+            if item.widget():
+                item.widget().deleteLater()
+
+        self._retry_count   = 0
+        self._spinner_frame = 0
+        self._activity_text = text
+
+        lbl = QLabel()
+        lbl.setStyleSheet(
+            "border: none; font-size: 10px; color: #dddddd; font-family: monospace;"
+        )
+        self._activity_layout.addWidget(lbl)
+        self._activity_current = lbl
+
+        self._activity_frame.setVisible(True)
+        self._spinner_timer.start(100)  # ~10 fps
+        self._pulse_spinner()           # render first frame immediately
+
+    def _pulse_spinner(self) -> None:
+        """Advance the braille spinner by one frame on the active label."""
+        if self._activity_current is None:
+            return
+        frame = self._spinner_frames[self._spinner_frame % len(self._spinner_frames)]
+        self._activity_current.setText(f"{frame}  {self._activity_text}")
+        self._spinner_frame += 1
+
+    def _update_activity(self, text: str) -> None:
+        """Replace the current active line's text in-place (no new label added)."""
+        self._activity_text = text
+
+    def _add_activity_line(self, text: str) -> None:
+        """
+        Freeze the current label (dims it with a retry marker) and open a new
+        active line below it.  Called when a node loops back to an earlier node
+        (i.e. a sandbox-failure retry sends control back to the coder).
+        """
+        if self._activity_current is not None:
+            self._activity_current.setText(f"↺  {self._activity_text}")
+            self._activity_current.setStyleSheet(
+                "border: none; font-size: 10px; color: #555; font-family: monospace;"
+            )
+
+        self._activity_text = text
+        lbl = QLabel()
+        lbl.setStyleSheet(
+            "border: none; font-size: 10px; color: #dddddd; font-family: monospace;"
+        )
+        self._activity_layout.addWidget(lbl)
+        self._activity_current = lbl
+        self._pulse_spinner()
+
+    def _stop_activity(self) -> None:
+        """Stop the spinner and hide the activity widget."""
+        self._spinner_timer.stop()
+        if self._activity_frame is not None:
+            self._activity_frame.setVisible(False)
+        # Remove all labels so the next run starts clean.
+        if self._activity_layout is not None:
+            while self._activity_layout.count():
+                item = self._activity_layout.takeAt(0)
+                if item.widget():
+                    item.widget().deleteLater()
+        self._activity_current = None
+
+    def _advance_activity(self, node_name: str, state_delta: dict) -> None:
+        """
+        Update the activity indicator based on which node just completed.
+
+        - ``"_preflight"``        → update the current line with the Ollama message.
+        - ``"planner"``           → transition label to coder phase.
+        - ``"coder"``             → transition label to sandbox phase.
+        - ``"sandbox_executor"``  → success: transition to local; failure: new retry line.
+        - ``"local_executor"``    → pipeline done; hide indicator.
+        - ``"terminal_failure"``  → pipeline done; hide indicator.
+        """
+        if node_name == "_preflight":
+            msg = state_delta.get("message", "")
+            if msg:
+                self._update_activity(f"Preparing Ollama — {msg}")
+            return
+
+        if node_name == "planner":
+            self._update_activity("Generating Python script…")
+
+        elif node_name == "coder":
+            if self._retry_count > 0:
+                self._update_activity(
+                    f"Re-validating corrected script (attempt {self._retry_count + 1})…"
+                )
+            else:
+                self._update_activity("Validating script on sample images…")
+
+        elif node_name == "sandbox_executor":
+            if state_delta.get("execution_success"):
+                self._update_activity("Running script on full dataset…")
+            else:
+                self._retry_count += 1
+                self._add_activity_line(
+                    f"Retry {self._retry_count} — Regenerating script with error corrections…"
+                )
+
+        elif node_name in ("local_executor", "terminal_failure"):
+            self._stop_activity()
+
     # ── Key visibility toggle ─────────────────────────────────────────────────
 
     def _toggle_key_vis(self, visible: bool) -> None:
@@ -589,6 +727,9 @@ class AgentPanel(QWidget):
         self._log(f"[Agent] Output:   {self._output_dir}")
         self._log("")
 
+        _initial = "Preparing Ollama…" if provider == "ollama" else "Planning preprocessing steps…"
+        self._start_activity(_initial)
+
         self._worker = run_biovision_agent_worker(
             metadata_yaml=metadata_yaml,
             input_dir=self._input_dir,
@@ -618,8 +759,7 @@ class AgentPanel(QWidget):
             msg = state_delta.get("message", "")
             if msg:
                 self._log(f"[Preflight] {msg}")
-                short = msg if len(msg) <= 72 else msg[:69] + "…"
-                self._lbl_run_status.setText(f"● {short}")
+            self._advance_activity(node_name, state_delta)
             return
 
         label = _node_label(node_name)
@@ -662,7 +802,10 @@ class AgentPanel(QWidget):
             error = state_delta.get("error", "")
             self._log_err(f"  {error}")
 
+        self._advance_activity(node_name, state_delta)
+
     def _on_agent_finished(self) -> None:
+        self._stop_activity()
         self._lbl_run_status.setText("● Done")
         self._lbl_run_status.setStyleSheet("font-size: 11px; color: #44ff88;")
         self._log("\n[Agent] Pipeline finished.")
@@ -673,6 +816,7 @@ class AgentPanel(QWidget):
         self.agent_finished.emit()
 
     def _on_agent_error(self, exc: Exception) -> None:
+        self._stop_activity()
         msg = str(exc)
         self._lbl_run_status.setText(f"● Error")
         self._lbl_run_status.setStyleSheet("font-size: 11px; color: #ff4444;")
