@@ -332,7 +332,10 @@ class AgentPanel(QWidget):
         model_row.addWidget(self._btn_detect)
         layout.addLayout(model_row)
 
-        self._lbl_ollama_status = QLabel("Click Detect to find local Ollama models.")
+        self._lbl_ollama_status = QLabel(
+            "Ollama will be started automatically when you click Run. "
+            "Optionally click Detect to list local models."
+        )
         self._lbl_ollama_status.setStyleSheet("font-size: 10px; color: #aaa;")
         layout.addWidget(self._lbl_ollama_status)
 
@@ -491,11 +494,12 @@ class AgentPanel(QWidget):
         self._validate()
 
     def _on_ollama_error(self, exc: Exception) -> None:
+        # Ollama not running is not an error here — the worker will start it automatically.
         self._lbl_ollama_status.setText(
-            f"Ollama not reachable ({exc}). "
-            "Start Ollama or type a model name manually."
+            "Ollama is not running — it will be started automatically when you click Run. "
+            "You can still type a model name or leave blank to use the default (llama3.2)."
         )
-        self._lbl_ollama_status.setStyleSheet("font-size: 10px; color: #ff6666;")
+        self._lbl_ollama_status.setStyleSheet("font-size: 10px; color: #aaa;")
         self._validate()
 
     # ── Key visibility toggle ─────────────────────────────────────────────────
@@ -539,7 +543,11 @@ class AgentPanel(QWidget):
                 issues.append("Anthropic API key required.")
         elif provider == "ollama":
             if not self._combo_ollama.currentText().strip():
-                issues.append("Select or type an Ollama model name.")
+                # Empty is fine — the preflight will fall back to the default model.
+                self._lbl_ollama_status.setText(
+                    "No model entered — default model 'llama3.2' will be used."
+                )
+                self._lbl_ollama_status.setStyleSheet("font-size: 10px; color: #aaa;")
 
         # Run button enabled when no issues
         can_run = not issues and self._worker is None
@@ -575,7 +583,8 @@ class AgentPanel(QWidget):
             self._on_agent_error(exc)
             return
 
-        self._log(f"[Agent] Provider: {provider}  Model: {model or '(default)'}")
+        _model_display = model or ("(default: llama3.2)" if provider == "ollama" else "(default)")
+        self._log(f"[Agent] Provider: {provider}  Model: {_model_display}")
         self._log(f"[Agent] Input:    {self._input_dir}")
         self._log(f"[Agent] Output:   {self._output_dir}")
         self._log("")
@@ -603,6 +612,16 @@ class AgentPanel(QWidget):
 
     def _on_node_done(self, payload: tuple) -> None:
         node_name, state_delta = payload
+
+        # Preflight messages from the Ollama startup / model-pull sequence.
+        if node_name == "_preflight":
+            msg = state_delta.get("message", "")
+            if msg:
+                self._log(f"[Preflight] {msg}")
+                short = msg if len(msg) <= 72 else msg[:69] + "…"
+                self._lbl_run_status.setText(f"● {short}")
+            return
+
         label = _node_label(node_name)
         self._lbl_run_status.setText(f"● {label}")
 

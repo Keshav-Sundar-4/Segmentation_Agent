@@ -124,40 +124,67 @@ def run_biovision_agent_worker(
     """
     Run the BioVision preprocessing pipeline in a background thread.
 
-    Yields ``(node_name: str, state_delta: dict)`` tuples as each graph node
-    completes — suitable for streaming progress updates into the UI.
+    For the ``"ollama"`` provider this worker performs a full preflight before
+    the pipeline graph starts:
+      1. Verify Ollama is installed.
+      2. Start the Ollama server if not already running.
+      3. Wait until the HTTP API is reachable.
+      4. Pull the requested model if it is not available locally.
 
-    Parameters
-    ----------
-    metadata_yaml:
-        Raw YAML string (contents of the metadata file, not the path).
-    input_dir:
-        Absolute path to the raw image folder.
-    output_dir:
-        Absolute path for processed output images.
-    llm_provider:
-        ``"anthropic"`` or ``"ollama"``.
-    llm_model:
-        Model identifier.  Empty → provider-specific default.
-    llm_api_key:
-        Anthropic API key.  Not required for Ollama.
-        Never logged or persisted by this worker.
-    llm_base_url:
-        Ollama base URL.  Empty → ``http://localhost:11434``.
+    Preflight progress is yielded as ``("_preflight", {"message": ...})``
+    tuples so the UI can display status updates while waiting.
 
-    Yields
-    ------
-    tuple[str, dict]
-        ``(node_name, state_delta)`` — the node that just finished and the
-        partial state it returned.
+    All other tuples are ``(node_name: str, state_delta: dict)`` from the
+    LangGraph pipeline nodes (planner, coder, sandbox_executor, …).
 
     Raises
     ------
+    RuntimeError
+        If Ollama is not installed (Local mode) or another preflight step fails.
     Any exception raised by the pipeline is propagated to the napari worker
     and delivered via the ``errored`` signal on the worker object.
     """
     _ensure_agent_importable()
 
+    # ── Ollama preflight (runs BEFORE the graph; never inside the graph) ──────
+    if llm_provider == "ollama":
+        from biovision_napari.services import ollama_runtime as _ort  # noqa: PLC0415
+
+        _base = llm_base_url or _ort.DEFAULT_BASE_URL
+        _model = llm_model.strip() or _ort.DEFAULT_MODEL
+
+        if not _ort.is_ollama_installed():
+            raise RuntimeError(
+                "Ollama is not installed on this machine. "
+                "Install Ollama from https://ollama.com to use Local mode."
+            )
+
+        if _ort.is_ollama_running(_base):
+            yield ("_preflight", {"message": "Ollama server is already running."})
+        else:
+            yield ("_preflight", {"message": "Starting Ollama server…"})
+            _ort.start_ollama_server()
+            import time  # noqa: PLC0415
+            time.sleep(0.5)
+            yield ("_preflight", {"message": "Waiting for Ollama server to be ready…"})
+            _ort.wait_for_ollama_ready(base_url=_base, timeout=40.0)
+            yield ("_preflight", {"message": "Ollama server started successfully."})
+
+        yield ("_preflight", {"message": f"Checking for model '{_model}'…"})
+
+        # ensure_ollama_model may pull (blocking, no sub-yields).
+        # Collect progress messages and emit them after the call returns.
+        _pull_msgs: list[str] = []
+        _ort.ensure_ollama_model(_model, base_url=_base, progress=_pull_msgs.append)
+        for _msg in _pull_msgs:
+            yield ("_preflight", {"message": _msg})
+
+        yield ("_preflight", {"message": f"Model '{_model}' ready. Starting pipeline…"})
+
+        # Use the resolved model name for the graph (handles empty llm_model).
+        llm_model = _model
+
+    # ── LangGraph pipeline ────────────────────────────────────────────────────
     from Agent.main import run_pipeline_stream  # noqa: PLC0415
 
     for node_name, state_delta in run_pipeline_stream(
