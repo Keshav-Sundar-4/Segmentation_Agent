@@ -28,6 +28,7 @@ class PipelineState(TypedDict):
     input_dir: str              # absolute path to folder of raw images
     output_dir: str             # absolute path where processed images are saved
     api_key: str                # Anthropic API key (not logged / persisted)
+    sample_dir: str             # temp dir holding 1-2 sampled images for sandbox testing
 
     # ── Planner outputs ───────────────────────────────────────────────────────
     plan_title: str             # short name for the preprocessing pipeline
@@ -42,6 +43,7 @@ class PipelineState(TypedDict):
     execution_stdout: str
     execution_stderr: str
     execution_success: bool
+    validated_dependencies: list[str]  # deps confirmed to install/run in sandbox
 
     # ── Control / retry tracking ──────────────────────────────────────────────
     error: Optional[str]        # last error message; None when clean

@@ -11,14 +11,13 @@ Minimal usage
     result = run_pipeline(
         metadata_yaml=open("meta.yaml").read(),
         input_dir="/data/raw",
-        output_dir="/data/processed",
     )
     print(result["execution_success"])   # True / False
     print(result["plan_title"])          # e.g. "CLAHE + Gaussian Denoising"
 
 Streaming (progress updates)
 -----------------------------
-    for event in run_pipeline_stream(metadata_yaml, input_dir, output_dir):
+    for event in run_pipeline_stream(metadata_yaml, input_dir):
         node_name, state_snapshot = event
         print(f"[{node_name}] done")
 
@@ -26,12 +25,24 @@ Environment variables
 ---------------------
     ANTHROPIC_API_KEY   — required if api_key= argument is not passed
     BIOVISION_USE_DOCKER — set to "1" to use Docker execution back-end
+
+Auto-sampling
+-------------
+    When ``input_dir`` is provided, the pipeline automatically creates a
+    temporary ``sample_dir`` containing 1-2 randomly chosen images.  The
+    sandbox executor validates generated code against these samples before
+    running on the full dataset.  The temporary directory is cleaned up
+    automatically after the pipeline finishes.
 """
 
 from __future__ import annotations
 
 import logging
 import os
+import random
+import shutil
+import tempfile
+from pathlib import Path
 from typing import Iterator, Optional
 
 logging.basicConfig(
@@ -39,6 +50,10 @@ logging.basicConfig(
     format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
 )
 logger = logging.getLogger("biovision")
+
+# Image extensions recognised when sampling from input_dir.
+_IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp", ".ndpi", ".svs"}
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -55,10 +70,47 @@ def _resolve_key(api_key: Optional[str]) -> str:
     return key
 
 
+def _create_sample_dir(input_dir: str) -> str:
+    """
+    Create a temporary directory containing 1-2 randomly selected images from
+    *input_dir*.  The caller is responsible for deleting the directory when done
+    (use ``shutil.rmtree`` or a ``tempfile.TemporaryDirectory`` context manager).
+
+    Raises
+    ------
+    ValueError
+        If no image files are found in *input_dir*.
+    """
+    input_path = Path(input_dir)
+    images = [
+        p for p in input_path.iterdir()
+        if p.is_file() and p.suffix.lower() in _IMAGE_EXTENSIONS
+    ]
+    if not images:
+        raise ValueError(
+            f"No image files found in {input_dir!r}. "
+            f"Supported extensions: {sorted(_IMAGE_EXTENSIONS)}"
+        )
+
+    sample = random.sample(images, min(2, len(images)))
+    tmp_dir = tempfile.mkdtemp(prefix="biovision_sample_")
+    for img in sample:
+        shutil.copy2(img, tmp_dir)
+
+    logger.info(
+        "Auto-sampling: created sample_dir=%r with %d image(s): %s",
+        tmp_dir,
+        len(sample),
+        [p.name for p in sample],
+    )
+    return tmp_dir
+
+
 def _make_initial_state(
     metadata_yaml: str,
     input_dir: str,
     output_dir: str,
+    sample_dir: str,
     api_key: str,
 ) -> dict:
     """Return a fully-initialised PipelineState dict (all fields populated)."""
@@ -67,6 +119,7 @@ def _make_initial_state(
         "metadata_yaml": metadata_yaml,
         "input_dir": input_dir,
         "output_dir": output_dir,
+        "sample_dir": sample_dir,
         "api_key": api_key,
         # ── Planner outputs (populated by planner_node) ───────────────────────
         "plan_title": "",
@@ -75,10 +128,11 @@ def _make_initial_state(
         # ── Coder outputs (populated by coder_node) ───────────────────────────
         "generated_code": "",
         "code_dependencies": [],
-        # ── Executor outputs (populated by executor_node) ─────────────────────
+        # ── Executor outputs (populated by executor nodes) ────────────────────
         "execution_stdout": "",
         "execution_stderr": "",
         "execution_success": False,
+        "validated_dependencies": [],
         # ── Control ───────────────────────────────────────────────────────────
         "error": None,
         "retries": 0,
@@ -94,7 +148,7 @@ def _make_initial_state(
 def run_pipeline(
     metadata_yaml: str,
     input_dir: str,
-    output_dir: str,
+    output_dir: Optional[str] = None,
     api_key: Optional[str] = None,
     *,
     thread_id: str = "default",
@@ -110,7 +164,8 @@ def run_pipeline(
     input_dir:
         Absolute path to the folder containing raw images.
     output_dir:
-        Absolute path where processed images will be saved.
+        Absolute path where processed images will be saved.  Defaults to
+        ``<input_dir>_biovision_output`` if not provided.
     api_key:
         Anthropic API key.  Falls back to ANTHROPIC_API_KEY env-var.
     thread_id:
@@ -127,12 +182,19 @@ def run_pipeline(
     from .graph.builder import build_graph  # deferred import for fast startup
 
     key = _resolve_key(api_key)
-    initial = _make_initial_state(metadata_yaml, input_dir, output_dir, key)
+    resolved_output = output_dir or str(Path(input_dir).parent / (Path(input_dir).name + "_biovision_output"))
 
-    graph = build_graph(checkpointer=checkpointer)
-    config = {"configurable": {"thread_id": thread_id}}
+    sample_dir = _create_sample_dir(input_dir)
+    try:
+        initial = _make_initial_state(metadata_yaml, input_dir, resolved_output, sample_dir, key)
 
-    final: dict = graph.invoke(initial, config=config)
+        graph = build_graph(checkpointer=checkpointer)
+        config = {"configurable": {"thread_id": thread_id}}
+
+        final: dict = graph.invoke(initial, config=config)
+    finally:
+        shutil.rmtree(sample_dir, ignore_errors=True)
+        logger.info("Auto-sampling: cleaned up sample_dir=%r.", sample_dir)
 
     logger.info(
         "Pipeline complete — success=%s, plan='%s'.",
@@ -145,7 +207,7 @@ def run_pipeline(
 def run_pipeline_stream(
     metadata_yaml: str,
     input_dir: str,
-    output_dir: str,
+    output_dir: Optional[str] = None,
     api_key: Optional[str] = None,
     *,
     thread_id: str = "default",
@@ -159,21 +221,28 @@ def run_pipeline_stream(
 
     Example
     -------
-        for node, snapshot in run_pipeline_stream(yaml, in_dir, out_dir):
+        for node, snapshot in run_pipeline_stream(yaml, in_dir):
             print(f"[{node}] plan_title={snapshot.get('plan_title', '…')}")
     """
     from .graph.builder import build_graph
 
     key = _resolve_key(api_key)
-    initial = _make_initial_state(metadata_yaml, input_dir, output_dir, key)
+    resolved_output = output_dir or str(Path(input_dir).parent / (Path(input_dir).name + "_biovision_output"))
 
-    graph = build_graph(checkpointer=checkpointer)
-    config = {"configurable": {"thread_id": thread_id}}
+    sample_dir = _create_sample_dir(input_dir)
+    try:
+        initial = _make_initial_state(metadata_yaml, input_dir, resolved_output, sample_dir, key)
 
-    for chunk in graph.stream(initial, config=config):
-        # chunk is {node_name: state_delta}
-        for node_name, state_delta in chunk.items():
-            yield node_name, state_delta
+        graph = build_graph(checkpointer=checkpointer)
+        config = {"configurable": {"thread_id": thread_id}}
+
+        for chunk in graph.stream(initial, config=config):
+            # chunk is {node_name: state_delta}
+            for node_name, state_delta in chunk.items():
+                yield node_name, state_delta
+    finally:
+        shutil.rmtree(sample_dir, ignore_errors=True)
+        logger.info("Auto-sampling: cleaned up sample_dir=%r.", sample_dir)
 
 
 # ---------------------------------------------------------------------------
@@ -189,7 +258,11 @@ if __name__ == "__main__":
     )
     parser.add_argument("metadata_yaml", help="Path to a metadata YAML file")
     parser.add_argument("input_dir", help="Directory containing raw images")
-    parser.add_argument("output_dir", help="Directory to write processed images")
+    parser.add_argument(
+        "--output-dir",
+        default=None,
+        help="Directory to write processed images (default: <input_dir>_biovision_output)",
+    )
     args = parser.parse_args()
 
     with open(args.metadata_yaml, encoding="utf-8") as fh:

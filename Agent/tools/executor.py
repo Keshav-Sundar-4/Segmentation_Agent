@@ -42,41 +42,41 @@ logger = logging.getLogger("biovision.executor")
 # ── Dependency installation ───────────────────────────────────────────────────
 
 
-def _ensure_dependencies(packages: list[str]) -> None:
-    """pip-install *packages* that are not already importable."""
+def _ensure_dependencies(packages: list[str]) -> Optional[str]:
+    """
+    pip-install *packages* unconditionally.
+
+    Returns
+    -------
+    None
+        All packages installed successfully.
+    str
+        Error message if pip install fails — caller should surface this to the
+        Coder LLM so it can correct any hallucinated package names.
+    """
     if not packages:
-        return
+        return None
 
-    # Map pip package names to their actual Python import names
-    import_mapping = {
-        "scikit-image": "skimage",
-        "opencv-python-headless": "cv2",
-        "opencv-python": "cv2",
-        "pillow": "PIL",
-        "pyyaml": "yaml",
-        "scikit-learn": "sklearn",
-    }
-
-    missing: list[str] = []
-    for pkg in packages:
-        # Strip extras like 'pkg[extra]' and normalize to lowercase
-        base_pkg = pkg.split("[")[0].lower()
-        
-        # Check mapping first; fallback to replacing hyphens with underscores
-        import_name = import_mapping.get(base_pkg, base_pkg.replace("-", "_"))
-        
-        try:
-            __import__(import_name)
-        except ImportError:
-            # Append the original package name for pip to install
-            missing.append(pkg)
-
-    if missing:
-        logger.info("Executor: installing missing deps: %s", missing)
+    logger.info("Executor: installing dependencies: %s", packages)
+    try:
         subprocess.check_call(
-            [sys.executable, "-m", "pip", "install", "--quiet", *missing],
+            [sys.executable, "-m", "pip", "install", "--quiet", *packages],
             timeout=120,
         )
+    except subprocess.CalledProcessError as exc:
+        err = f"pip install failed for {packages} (exit code {exc.returncode})"
+        logger.error("Executor: %s", err)
+        return err
+    except subprocess.TimeoutExpired:
+        err = f"pip install timed out after 120 s for {packages}"
+        logger.error("Executor: %s", err)
+        return err
+    except Exception as exc:  # noqa: BLE001
+        err = f"pip install error: {exc}"
+        logger.error("Executor: %s", err)
+        return err
+
+    return None
 
 # ── Execution back-ends ───────────────────────────────────────────────────────
 
@@ -188,7 +188,9 @@ def exec_sandboxed(
     """
     Path(output_dir).mkdir(parents=True, exist_ok=True)
 
-    _ensure_dependencies(dependencies or [])
+    dep_error = _ensure_dependencies(dependencies or [])
+    if dep_error:
+        return {"success": False, "stdout": "", "stderr": dep_error}
 
     with tempfile.NamedTemporaryFile(
         suffix=".py", delete=False, mode="w", encoding="utf-8"
