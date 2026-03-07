@@ -10,35 +10,13 @@ validated, executed Python preprocessing script — with zero manual interventio
 ### Full topology
 
 ```
-                      ┌─────────────────────────────────────────────────────┐
-                      │                  RETRY LOOP (max 3)                 │
-                      │                                                      │
-  START               ▼           direct           conditional               │
-    │        ┌──────────────┐      edge      ┌──────────────────┐  failure  │
-    └───────► │   planner    │ ─────────────► │      coder       │ ──────────┘
-              └──────────────┘                └──────────────────┘
-                                                       │
-                                                 direct edge
-                                                       │
-                                                       ▼
-                                            ┌────────────────────┐
-                                            │  sandbox_executor  │  ← Docker · sample_dir
-                                            └────────────────────┘
-                                                       │
-                                          ┌────────────┴────────────┐
-                                     success                      failure
-                                          │                          │
-                                          ▼                          │
-                                 ┌────────────────┐         retries < MAX_RETRIES?
-                                 │ local_executor │              │         │
-                                 └────────────────┘            yes        no
-                                          │                     │         │
-                                    direct edge          back to coder    │
-                                          │                          ┌────┘
-                                          ▼                          ▼
-                                         END ◄──────────── local_executor
-                                                          (passes failure state
-                                                           through to caller)
+Current topology
+----------------
+
+    [planner] ──► [coder] ──► [sandbox_executor] ──► [local_executor] ──► END
+                    ▲                │
+                    └────────────────┘  (on failure, up to MAX_RETRIES)
+
 ```
 
 ### Nodes
