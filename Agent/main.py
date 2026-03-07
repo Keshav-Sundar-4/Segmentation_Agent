@@ -4,27 +4,48 @@ BioVision agent — public entry point.
 Called by the Napari UI worker or directly from the command line for
 development and testing.
 
-Minimal usage
--------------
+Minimal usage (Anthropic / Claude)
+-----------------------------------
     from Agent.main import run_pipeline
 
     result = run_pipeline(
         metadata_yaml=open("meta.yaml").read(),
         input_dir="/data/raw",
+        api_key="sk-ant-…",          # or set ANTHROPIC_API_KEY env-var
     )
     print(result["execution_success"])   # True / False
     print(result["plan_title"])          # e.g. "CLAHE + Gaussian Denoising"
 
+Minimal usage (Ollama / local)
+-------------------------------
+    result = run_pipeline(
+        metadata_yaml=open("meta.yaml").read(),
+        input_dir="/data/raw",
+        llm_provider="ollama",
+        llm_model="llama3.2",
+    )
+
 Streaming (progress updates)
 -----------------------------
-    for event in run_pipeline_stream(metadata_yaml, input_dir):
-        node_name, state_snapshot = event
+    for node_name, state_delta in run_pipeline_stream(
+        metadata_yaml, input_dir, llm_provider="anthropic", api_key="sk-ant-…"
+    ):
         print(f"[{node_name}] done")
+
+Provider / model arguments
+--------------------------
+    llm_provider  : "anthropic" (default) | "ollama"
+    llm_model     : model identifier; empty → role-specific default
+    llm_api_key   : Anthropic API key (or use env ANTHROPIC_API_KEY)
+    llm_base_url  : Ollama base URL (default: http://localhost:11434)
+
+    # Backward-compat alias — treated the same as llm_api_key for Anthropic:
+    api_key       : Anthropic API key
 
 Environment variables
 ---------------------
-    ANTHROPIC_API_KEY   — required if api_key= argument is not passed
-    BIOVISION_USE_DOCKER — set to "1" to use Docker execution back-end
+    ANTHROPIC_API_KEY    — Anthropic key fallback when llm_api_key / api_key not passed
+    BIOVISION_USE_DOCKER — set to "1" to use Docker for sandbox execution
 
 Auto-sampling
 -------------
@@ -60,12 +81,14 @@ _IMAGE_EXTENSIONS = {".png", ".jpg", ".jpeg", ".tif", ".tiff", ".bmp", ".ndpi", 
 # ---------------------------------------------------------------------------
 
 
-def _resolve_key(api_key: Optional[str]) -> str:
-    key = api_key or os.environ.get("ANTHROPIC_API_KEY", "")
+def _resolve_anthropic_key(llm_api_key: Optional[str], api_key: Optional[str]) -> str:
+    """Return the Anthropic API key, checking both args then the env-var."""
+    key = llm_api_key or api_key or os.environ.get("ANTHROPIC_API_KEY", "")
     if not key:
         raise ValueError(
             "An Anthropic API key is required. "
-            "Pass api_key= or set the ANTHROPIC_API_KEY environment variable."
+            "Pass llm_api_key= (or api_key=) or set the ANTHROPIC_API_KEY "
+            "environment variable."
         )
     return key
 
@@ -73,8 +96,7 @@ def _resolve_key(api_key: Optional[str]) -> str:
 def _create_sample_dir(input_dir: str) -> str:
     """
     Create a temporary directory containing 1-2 randomly selected images from
-    *input_dir*.  The caller is responsible for deleting the directory when done
-    (use ``shutil.rmtree`` or a ``tempfile.TemporaryDirectory`` context manager).
+    *input_dir*.  The caller is responsible for deleting the directory when done.
 
     Raises
     ------
@@ -111,33 +133,76 @@ def _make_initial_state(
     input_dir: str,
     output_dir: str,
     sample_dir: str,
-    api_key: str,
+    llm_provider: str,
+    llm_model: str,
+    llm_api_key: str,
+    llm_base_url: str,
+    # Kept for backward-compat callers that inspect api_key directly.
+    api_key: str = "",
 ) -> dict:
     """Return a fully-initialised PipelineState dict (all fields populated)."""
     return {
         # ── Inputs ────────────────────────────────────────────────────────────
         "metadata_yaml": metadata_yaml,
-        "input_dir": input_dir,
-        "output_dir": output_dir,
-        "sample_dir": sample_dir,
-        "api_key": api_key,
+        "input_dir":     input_dir,
+        "output_dir":    output_dir,
+        "sample_dir":    sample_dir,
+        # ── LLM runtime configuration ─────────────────────────────────────────
+        "llm_provider": llm_provider,
+        "llm_model":    llm_model,
+        "llm_api_key":  llm_api_key,
+        "llm_base_url": llm_base_url,
+        # Deprecated alias — kept so any code still reading state["api_key"] works.
+        "api_key": api_key or llm_api_key,
         # ── Planner outputs (populated by planner_node) ───────────────────────
-        "plan_title": "",
-        "plan_steps": [],
+        "plan_title":    "",
+        "plan_steps":    [],
         "plan_rationale": "",
         # ── Coder outputs (populated by coder_node) ───────────────────────────
-        "generated_code": "",
+        "generated_code":    "",
         "code_dependencies": [],
         # ── Executor outputs (populated by executor nodes) ────────────────────
-        "execution_stdout": "",
-        "execution_stderr": "",
-        "execution_success": False,
+        "execution_stdout":       "",
+        "execution_stderr":       "",
+        "execution_success":      False,
         "validated_dependencies": [],
         # ── Control ───────────────────────────────────────────────────────────
-        "error": None,
+        "error":   None,
         "retries": 0,
         "messages": [],
     }
+
+
+def _prepare_run(
+    metadata_yaml: str,
+    input_dir: str,
+    output_dir: Optional[str],
+    llm_provider: str,
+    llm_model: str,
+    llm_api_key: str,
+    llm_base_url: str,
+    api_key: str,
+) -> tuple[dict, str]:
+    """
+    Validate inputs, resolve defaults, create sample dir, and return
+    ``(initial_state, sample_dir)`` so the caller can always clean up.
+    """
+    resolved_output = output_dir or str(
+        Path(input_dir).parent / (Path(input_dir).name + "_biovision_output")
+    )
+    sample_dir = _create_sample_dir(input_dir)
+    initial = _make_initial_state(
+        metadata_yaml=metadata_yaml,
+        input_dir=input_dir,
+        output_dir=resolved_output,
+        sample_dir=sample_dir,
+        llm_provider=llm_provider,
+        llm_model=llm_model,
+        llm_api_key=llm_api_key,
+        llm_base_url=llm_base_url,
+        api_key=api_key,
+    )
+    return initial, sample_dir
 
 
 # ---------------------------------------------------------------------------
@@ -149,8 +214,15 @@ def run_pipeline(
     metadata_yaml: str,
     input_dir: str,
     output_dir: Optional[str] = None,
+    # ── Anthropic backward-compat alias ───────────────────────────────────────
     api_key: Optional[str] = None,
     *,
+    # ── Provider / model settings ─────────────────────────────────────────────
+    llm_provider: str = "anthropic",
+    llm_model: Optional[str] = None,
+    llm_api_key: Optional[str] = None,
+    llm_base_url: Optional[str] = None,
+    # ── Graph options ─────────────────────────────────────────────────────────
     thread_id: str = "default",
     checkpointer: bool = False,
 ) -> dict:
@@ -160,17 +232,25 @@ def run_pipeline(
     Parameters
     ----------
     metadata_yaml:
-        Raw YAML string describing the dataset (passed from the Napari UI).
+        Raw YAML string describing the dataset.
     input_dir:
         Absolute path to the folder containing raw images.
     output_dir:
-        Absolute path where processed images will be saved.  Defaults to
-        ``<input_dir>_biovision_output`` if not provided.
+        Absolute path where processed images will be saved.
+        Defaults to ``<input_dir>_biovision_output``.
     api_key:
-        Anthropic API key.  Falls back to ANTHROPIC_API_KEY env-var.
+        Anthropic API key (backward-compat alias for ``llm_api_key``).
+        Falls back to the ANTHROPIC_API_KEY environment variable.
+    llm_provider:
+        ``"anthropic"`` (default) or ``"ollama"``.
+    llm_model:
+        Model identifier.  Empty → role-specific default for the provider.
+    llm_api_key:
+        Anthropic API key.  Falls back to ``api_key`` then ANTHROPIC_API_KEY.
+    llm_base_url:
+        Ollama base URL.  Empty → ``http://localhost:11434``.
     thread_id:
-        Checkpointer thread identifier.  Use a unique value per run when
-        ``checkpointer=True`` to keep state isolated between runs.
+        Checkpointer thread identifier.
     checkpointer:
         Attach an in-memory MemorySaver for HITL / pause-resume support.
 
@@ -181,16 +261,27 @@ def run_pipeline(
     """
     from .graph.builder import build_graph  # deferred import for fast startup
 
-    key = _resolve_key(api_key)
-    resolved_output = output_dir or str(Path(input_dir).parent / (Path(input_dir).name + "_biovision_output"))
+    resolved_provider = (llm_provider or "anthropic").lower().strip()
 
-    sample_dir = _create_sample_dir(input_dir)
+    # Resolve the Anthropic key — only required for the anthropic provider.
+    resolved_api_key = ""
+    if resolved_provider == "anthropic":
+        resolved_api_key = _resolve_anthropic_key(llm_api_key, api_key)
+
+    initial, sample_dir = _prepare_run(
+        metadata_yaml=metadata_yaml,
+        input_dir=input_dir,
+        output_dir=output_dir,
+        llm_provider=resolved_provider,
+        llm_model=llm_model or "",
+        llm_api_key=resolved_api_key,
+        llm_base_url=llm_base_url or "",
+        api_key=api_key or "",
+    )
+
     try:
-        initial = _make_initial_state(metadata_yaml, input_dir, resolved_output, sample_dir, key)
-
         graph = build_graph(checkpointer=checkpointer)
         config = {"configurable": {"thread_id": thread_id}}
-
         final: dict = graph.invoke(initial, config=config)
     finally:
         shutil.rmtree(sample_dir, ignore_errors=True)
@@ -208,31 +299,46 @@ def run_pipeline_stream(
     metadata_yaml: str,
     input_dir: str,
     output_dir: Optional[str] = None,
+    # ── Anthropic backward-compat alias ───────────────────────────────────────
     api_key: Optional[str] = None,
     *,
+    # ── Provider / model settings ─────────────────────────────────────────────
+    llm_provider: str = "anthropic",
+    llm_model: Optional[str] = None,
+    llm_api_key: Optional[str] = None,
+    llm_base_url: Optional[str] = None,
+    # ── Graph options ─────────────────────────────────────────────────────────
     thread_id: str = "default",
     checkpointer: bool = False,
 ) -> Iterator[tuple[str, dict]]:
     """
     Stream node-by-node state snapshots as the pipeline executes.
 
-    Yields ``(node_name, state_snapshot)`` tuples.  Useful for the Napari
-    worker thread to surface progress updates in the UI without blocking.
+    Yields ``(node_name, state_delta)`` tuples.  Useful for the Napari
+    worker thread to surface progress updates without blocking the UI.
 
-    Example
-    -------
-        for node, snapshot in run_pipeline_stream(yaml, in_dir):
-            print(f"[{node}] plan_title={snapshot.get('plan_title', '…')}")
+    See ``run_pipeline`` for parameter documentation.
     """
     from .graph.builder import build_graph
 
-    key = _resolve_key(api_key)
-    resolved_output = output_dir or str(Path(input_dir).parent / (Path(input_dir).name + "_biovision_output"))
+    resolved_provider = (llm_provider or "anthropic").lower().strip()
 
-    sample_dir = _create_sample_dir(input_dir)
+    resolved_api_key = ""
+    if resolved_provider == "anthropic":
+        resolved_api_key = _resolve_anthropic_key(llm_api_key, api_key)
+
+    initial, sample_dir = _prepare_run(
+        metadata_yaml=metadata_yaml,
+        input_dir=input_dir,
+        output_dir=output_dir,
+        llm_provider=resolved_provider,
+        llm_model=llm_model or "",
+        llm_api_key=resolved_api_key,
+        llm_base_url=llm_base_url or "",
+        api_key=api_key or "",
+    )
+
     try:
-        initial = _make_initial_state(metadata_yaml, input_dir, resolved_output, sample_dir, key)
-
         graph = build_graph(checkpointer=checkpointer)
         config = {"configurable": {"thread_id": thread_id}}
 
@@ -255,20 +361,56 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(
         description="BioVision image preprocessing pipeline",
         formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples
+--------
+  # Anthropic (key from env-var)
+  python -m Agent.main meta.yaml /data/raw
+
+  # Anthropic with explicit key
+  python -m Agent.main meta.yaml /data/raw --api-key sk-ant-…
+
+  # Ollama / local
+  python -m Agent.main meta.yaml /data/raw --provider ollama --model llama3.2
+""",
     )
     parser.add_argument("metadata_yaml", help="Path to a metadata YAML file")
-    parser.add_argument("input_dir", help="Directory containing raw images")
+    parser.add_argument("input_dir",     help="Directory containing raw images")
     parser.add_argument(
-        "--output-dir",
-        default=None,
+        "--output-dir", default=None,
         help="Directory to write processed images (default: <input_dir>_biovision_output)",
+    )
+    parser.add_argument(
+        "--provider", default="anthropic",
+        choices=["anthropic", "ollama"],
+        help="LLM provider (default: anthropic)",
+    )
+    parser.add_argument(
+        "--model", default=None,
+        help="Model identifier (default: provider-specific default)",
+    )
+    parser.add_argument(
+        "--api-key", default=None,
+        help="Anthropic API key (default: ANTHROPIC_API_KEY env-var)",
+    )
+    parser.add_argument(
+        "--base-url", default=None,
+        help="Ollama base URL (default: http://localhost:11434)",
     )
     args = parser.parse_args()
 
     with open(args.metadata_yaml, encoding="utf-8") as fh:
         yaml_str = fh.read()
 
-    result = run_pipeline(yaml_str, args.input_dir, args.output_dir)
+    result = run_pipeline(
+        yaml_str,
+        args.input_dir,
+        args.output_dir,
+        llm_provider=args.provider,
+        llm_model=args.model,
+        llm_api_key=args.api_key,
+        llm_base_url=args.base_url,
+    )
 
     print("\n── Pipeline summary ──────────────────────────────────────")
     print(f"  Plan      : {result['plan_title']}")

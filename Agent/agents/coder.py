@@ -7,17 +7,21 @@ paths.  It never sees the raw metadata or previous conversation history so
 that its output stays focused on implementation rather than re-analysis.
 
 .with_structured_output(GeneratedCode) guarantees:
-  - `code`  : raw Python string (no markdown fences)
+  - `code`         : raw Python string (no markdown fences)
   - `dependencies` : list of pip packages needed at runtime
+
+The chat model is constructed by llm_factory.make_llm() using the provider /
+model settings already in PipelineState.  Coder never decides which LLM to
+use — that is deterministic runtime configuration set before the graph runs.
 """
 
 from __future__ import annotations
 
 import logging
 
-from langchain_anthropic import ChatAnthropic
 from langchain_core.messages import HumanMessage, SystemMessage
 
+from ..core.llm_factory import make_llm, resolve_model
 from ..core.schema import GeneratedCode
 from ..core.state import PipelineState
 
@@ -51,11 +55,19 @@ def coder_node(state: PipelineState) -> dict:
     """LangGraph node: PreprocessingPlan fields → validated Python script."""
     logger.info("Coder: generating code for plan '%s'.", state.get("plan_title", ""))
 
-    llm = ChatAnthropic(
-        model="claude-3-7-sonnet-latest",
-        api_key=state["api_key"],
+    provider  = state.get("llm_provider", "anthropic") or "anthropic"
+    model     = resolve_model(provider, "coder", state.get("llm_model") or "")
+    api_key   = state.get("llm_api_key") or state.get("api_key", "")
+    base_url  = state.get("llm_base_url", "")
+
+    llm = make_llm(
+        provider=provider,
+        model=model,
+        api_key=api_key,
+        base_url=base_url,
         temperature=0,
-    ).with_structured_output(GeneratedCode)
+        schema=GeneratedCode,
+    )
 
     numbered_steps = "\n".join(
         f"  {i + 1}. {step}" for i, step in enumerate(state["plan_steps"])

@@ -4,15 +4,19 @@ preprocessing plan that maximises segmentation accuracy.
 
 The LLM is bound to PreprocessingPlan via .with_structured_output(), so the
 return value is always a validated Pydantic model; no post-processing needed.
+
+The chat model is constructed by llm_factory.make_llm() using the provider /
+model settings already in PipelineState.  Planner never decides which LLM to
+use — that is deterministic runtime configuration set before the graph runs.
 """
 
 from __future__ import annotations
 
 import logging
 
-from langchain_anthropic import ChatAnthropic
 from langchain_core.messages import HumanMessage, SystemMessage
 
+from ..core.llm_factory import make_llm, resolve_model
 from ..core.schema import PreprocessingPlan
 from ..core.state import PipelineState
 
@@ -43,11 +47,19 @@ def planner_node(state: PipelineState) -> dict:
     """LangGraph node: metadata YAML → structured PreprocessingPlan."""
     logger.info("Planner: generating preprocessing plan.")
 
-    llm = ChatAnthropic(
-        model="claude-3-5-sonnet-latest",
-        api_key=state["api_key"],
+    provider  = state.get("llm_provider", "anthropic") or "anthropic"
+    model     = resolve_model(provider, "planner", state.get("llm_model") or "")
+    api_key   = state.get("llm_api_key") or state.get("api_key", "")
+    base_url  = state.get("llm_base_url", "")
+
+    llm = make_llm(
+        provider=provider,
+        model=model,
+        api_key=api_key,
+        base_url=base_url,
         temperature=0,
-    ).with_structured_output(PreprocessingPlan)
+        schema=PreprocessingPlan,
+    )
 
     messages = [
         SystemMessage(content=_SYSTEM_PROMPT),

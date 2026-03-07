@@ -7,17 +7,32 @@ Current topology
     [planner] ──► [coder] ──► [sandbox_executor] ──► [local_executor] ──► END
                     ▲                │
                     └────────────────┘  (on failure, up to MAX_RETRIES)
+                                    │
+                                    └──► [terminal_failure] ──► END
+                                         (when retries exhausted — full dataset
+                                          is NEVER touched on validation failure)
 
 Two-stage execution
 -------------------
-1. sandbox_executor  — Docker back-end, runs against the small ``sample_dir``.
+1. sandbox_executor  — Subprocess back-end (Docker optional via
+   BIOVISION_USE_DOCKER=1), runs against the small ``sample_dir``.
    Validates that the generated code and its dependencies actually work before
    touching the full image dataset.  Failures (pip errors, runtime crashes)
-   route back to the Coder with the error in state.
+   route back to the Coder with the error in state, up to MAX_RETRIES times.
+   After MAX_RETRIES, routes to terminal_failure — the full dataset is NOT
+   processed.
 
 2. local_executor    — Subprocess back-end, runs against the full ``input_dir``.
    Only reached once the sandbox stage succeeds.  Routes to END regardless of
    outcome (errors are surfaced to the caller via the state).
+
+Docker support
+--------------
+Sandbox execution uses subprocess by default for minimal friction.
+Set the environment variable BIOVISION_USE_DOCKER=1 to use Docker instead.
+If Docker is requested but the docker binary is not found, the error is
+surfaced in execution_stderr and the node fails cleanly (triggering a retry
+or terminal_failure as usual).
 
 Extending the graph
 -------------------
@@ -32,6 +47,7 @@ See LangGraph docs: https://langchain-ai.github.io/langgraph/
 from __future__ import annotations
 
 import logging
+import os
 import tempfile
 from typing import Literal
 
@@ -48,27 +64,34 @@ logger = logging.getLogger("biovision.graph")
 # Maximum number of coder retries after sandbox execution failures.
 MAX_RETRIES = 3
 
+# Use Docker for sandbox execution when this env-var is set to "1".
+# Defaults to False so basic local usage works without Docker.
+_USE_DOCKER: bool = os.environ.get("BIOVISION_USE_DOCKER", "0") == "1"
+
 
 # ── Executor nodes ────────────────────────────────────────────────────────────
 
 
 def sandbox_executor_node(state: PipelineState) -> dict:
     """
-    LangGraph node: validate the generated script inside Docker using sample_dir.
+    LangGraph node: validate the generated script against sample_dir.
 
-    Uses the Docker back-end so the code runs in a fully isolated container.
+    Uses subprocess by default (Docker when BIOVISION_USE_DOCKER=1).
     Succeeds fast on 1-2 sample images; failures are cheap to retry.
     """
-    logger.info("SandboxExecutor: running generated script against sample_dir.")
+    logger.info(
+        "SandboxExecutor: running generated script against sample_dir "
+        "(docker=%s).", _USE_DOCKER
+    )
 
-    # Create a throwaway output dir for sandbox results (discarded after).
+    # Throwaway output dir for sandbox results — discarded after validation.
     with tempfile.TemporaryDirectory(prefix="biovision_sandbox_out_") as sandbox_out:
         result = exec_sandboxed(
             code=state["generated_code"],
             input_dir=state["sample_dir"],
             output_dir=sandbox_out,
             dependencies=state.get("code_dependencies", []),
-            use_docker=True,
+            use_docker=_USE_DOCKER,
         )
 
     success = result["success"]
@@ -125,37 +148,53 @@ def local_executor_node(state: PipelineState) -> dict:
     }
 
 
+def terminal_failure_node(state: PipelineState) -> dict:
+    """
+    LangGraph node: sandbox retries exhausted — terminate without running full dataset.
+
+    This node is reached ONLY when MAX_RETRIES is exhausted and the sandbox
+    validation still fails.  The full image dataset is NEVER touched.
+    """
+    msg = (
+        state.get("error")
+        or "Sandbox validation failed after maximum retries. Full dataset was not processed."
+    )
+    logger.error("Pipeline: terminal failure — %s", msg)
+    return {
+        "execution_success": False,
+        "error": msg,
+    }
+
+
 # ── Routing functions ─────────────────────────────────────────────────────────
 
 
 def _route_after_sandbox(
     state: PipelineState,
-) -> Literal["coder", "local_executor"]:
+) -> Literal["coder", "local_executor", "terminal_failure"]:
     """
     After sandbox execution:
-      - Success               → local_executor (run against full dataset)
-      - Failure within budget → coder (LLM self-corrects with the error)
-      - Failure beyond budget → local_executor with execution_success=False
-                                so the caller can surface the error cleanly
+      - Success               → local_executor  (run against full dataset)
+      - Failure within budget → coder           (LLM self-corrects with error)
+      - Failure beyond budget → terminal_failure (clean abort; full dataset untouched)
     """
     if state["execution_success"]:
         return "local_executor"
 
-    if state.get("retries", 0) < MAX_RETRIES:
+    retries = state.get("retries", 0)
+    if retries < MAX_RETRIES:
         logger.info(
             "SandboxExecutor: routing back to Coder (attempt %d/%d).",
-            state["retries"],
+            retries,
             MAX_RETRIES,
         )
         return "coder"
 
     logger.error(
-        "SandboxExecutor: max retries (%d) reached. Passing failure to local_executor.",
+        "SandboxExecutor: max retries (%d) reached. Terminating — full dataset untouched.",
         MAX_RETRIES,
     )
-    # Terminate via local_executor so the graph always exits through that node
-    # and the final state has a consistent shape for the caller.
-    return "local_executor"
+    return "terminal_failure"
 
 
 # ── Public factory ────────────────────────────────────────────────────────────
@@ -181,25 +220,31 @@ def build_graph(*, checkpointer: bool = False):
     graph: StateGraph = StateGraph(PipelineState)
 
     # ── Nodes ──────────────────────────────────────────────────────────────────
-    graph.add_node("planner", planner_node)
-    graph.add_node("coder", coder_node)
+    graph.add_node("planner",          planner_node)
+    graph.add_node("coder",            coder_node)
     graph.add_node("sandbox_executor", sandbox_executor_node)
-    graph.add_node("local_executor", local_executor_node)
+    graph.add_node("local_executor",   local_executor_node)
+    graph.add_node("terminal_failure", terminal_failure_node)
 
     # ── Edges ──────────────────────────────────────────────────────────────────
     graph.set_entry_point("planner")
     graph.add_edge("planner", "coder")
-    graph.add_edge("coder", "sandbox_executor")
+    graph.add_edge("coder",   "sandbox_executor")
 
-    # Conditional edge: sandbox may loop back to coder on failure.
+    # Conditional: sandbox may loop back to coder or abort to terminal_failure.
     graph.add_conditional_edges(
         "sandbox_executor",
         _route_after_sandbox,
-        {"coder": "coder", "local_executor": "local_executor"},
+        {
+            "coder":            "coder",
+            "local_executor":   "local_executor",
+            "terminal_failure": "terminal_failure",
+        },
     )
 
-    # local_executor always terminates the graph.
-    graph.add_edge("local_executor", END)
+    # Both terminal paths go to END.
+    graph.add_edge("local_executor",   END)
+    graph.add_edge("terminal_failure", END)
 
     compile_kwargs: dict = {}
     if checkpointer:

@@ -27,8 +27,20 @@ class PipelineState(TypedDict):
     metadata_yaml: str          # raw YAML string from the Napari UI
     input_dir: str              # absolute path to folder of raw images
     output_dir: str             # absolute path where processed images are saved
-    api_key: str                # Anthropic API key (not logged / persisted)
-    sample_dir: str             # temp dir holding 1-2 sampled images for sandbox testing
+    sample_dir: str             # temp dir holding 1-2 sampled images for sandbox
+
+    # ── LLM runtime configuration ─────────────────────────────────────────────
+    # These are set once by the caller and read by planner_node / coder_node.
+    # They are NEVER mutated by graph nodes — provider selection is deterministic
+    # runtime config, not an LLM planning task.
+    llm_provider: str           # "anthropic" | "ollama"
+    llm_model: str              # resolved model id; empty → role-specific default
+    llm_api_key: str            # Anthropic API key (never logged or persisted)
+    llm_base_url: str           # Ollama base URL; empty → "http://localhost:11434"
+
+    # Deprecated: kept for backward compatibility with callers that pass api_key=.
+    # The factory reads llm_api_key first and falls back to api_key.
+    api_key: str
 
     # ── Planner outputs ───────────────────────────────────────────────────────
     plan_title: str             # short name for the preprocessing pipeline
