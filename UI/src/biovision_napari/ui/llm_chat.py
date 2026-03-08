@@ -7,9 +7,11 @@ in the UI without touching environment variables or config files.
 """
 from __future__ import annotations
 
+import json
 import os
 import re
 import textwrap
+import urllib.request
 from typing import Optional
 
 import yaml
@@ -73,6 +75,28 @@ _PROVIDERS = {
 
 
 # ---------------------------------------------------------------------------
+# Ollama model discovery
+# ---------------------------------------------------------------------------
+
+_OLLAMA_BASE = "http://localhost:11434"
+
+
+def _fetch_ollama_models(base_url: str = _OLLAMA_BASE) -> list[str]:
+    """Return model names available in Ollama. Empty list on any failure."""
+    try:
+        with urllib.request.urlopen(f"{base_url}/api/tags", timeout=3) as resp:
+            data = json.loads(resp.read())
+        return [m["name"] for m in data.get("models", [])]
+    except Exception:
+        return []
+
+
+@thread_worker
+def _fetch_ollama_models_worker(base_url: str = _OLLAMA_BASE):
+    yield _fetch_ollama_models(base_url)
+
+
+# ---------------------------------------------------------------------------
 # Connection detection
 # ---------------------------------------------------------------------------
 
@@ -126,11 +150,11 @@ def _detect_connection(cfg=None) -> Optional[_Connection]:
 
     # 5. Ollama running locally
     try:
-        import urllib.request
-        urllib.request.urlopen("http://localhost:11434/api/tags", timeout=2)
         p = _PROVIDERS["Ollama (local — no key)"]
-        return _Connection("openai", p["model"], "ollama",
-                           p["base_url"], "Ollama / llama3.2 (local)")
+        models = _fetch_ollama_models()
+        model = models[0] if models else p["model"]
+        return _Connection("openai", model, "ollama",
+                           p["base_url"], f"Ollama / {model} (local)")
     except Exception:
         pass
 
@@ -227,6 +251,8 @@ class _SetupPanel(QGroupBox):
         layout = QVBoxLayout(self)
         layout.setSpacing(6)
 
+        self._fetch_worker = None  # background Ollama model fetch
+
         # Provider picker
         row1 = QHBoxLayout()
         row1.addWidget(QLabel("Provider:"))
@@ -236,6 +262,22 @@ class _SetupPanel(QGroupBox):
         self._combo.currentTextChanged.connect(self._on_provider_changed)
         row1.addWidget(self._combo, stretch=1)
         layout.addLayout(row1)
+
+        # Model row — combobox for Ollama, line-edit for cloud providers
+        row_model = QHBoxLayout()
+        row_model.addWidget(QLabel("Model:"))
+        self._model_combo = QComboBox()
+        self._model_combo.setEditable(True)
+        self._model_combo.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
+        row_model.addWidget(self._model_combo, stretch=1)
+        self._btn_refresh = QPushButton("↻")
+        self._btn_refresh.setFixedWidth(28)
+        self._btn_refresh.setToolTip("Refresh model list from Ollama")
+        self._btn_refresh.clicked.connect(self._refresh_ollama_models)
+        row_model.addWidget(self._btn_refresh)
+        self._model_edit = QLineEdit()
+        row_model.addWidget(self._model_edit, stretch=1)
+        layout.addLayout(row_model)
 
         # Key entry
         row2 = QHBoxLayout()
@@ -275,6 +317,15 @@ class _SetupPanel(QGroupBox):
     def _on_provider_changed(self, name: str) -> None:
         p = _PROVIDERS[name]
         needs_key = p["needs_key"]
+        is_ollama = not needs_key  # currently only Ollama is keyless
+
+        # Show the right model widget
+        self._model_combo.setVisible(is_ollama)
+        self._btn_refresh.setVisible(is_ollama)
+        self._model_edit.setVisible(not is_ollama)
+        if not is_ollama:
+            self._model_edit.setText(p["model"])
+
         self._lbl_key.setVisible(needs_key)
         self._key_input.setVisible(needs_key)
         self._btn_show.setVisible(needs_key)
@@ -287,7 +338,38 @@ class _SetupPanel(QGroupBox):
                 f'Make sure Ollama is running. '
                 f'<a href="{url}">Install Ollama →</a>'
             )
+            self._refresh_ollama_models()
         self._lbl_status.setText("")
+
+    def _refresh_ollama_models(self) -> None:
+        """Fetch available models from Ollama in a background thread."""
+        if self._fetch_worker is not None:
+            return
+        self._model_combo.clear()
+        self._model_combo.addItem("Fetching models…")
+        self._model_combo.setEnabled(False)
+        self._btn_refresh.setEnabled(False)
+        self._fetch_worker = _fetch_ollama_models_worker()
+        self._fetch_worker.yielded.connect(self._on_models_fetched)
+        self._fetch_worker.finished.connect(self._on_fetch_done)
+        self._fetch_worker.start()
+
+    def _on_models_fetched(self, models: list) -> None:
+        self._model_combo.clear()
+        if models:
+            for m in models:
+                self._model_combo.addItem(m)
+            self._lbl_status.setText(f"{len(models)} model(s) found")
+            self._lbl_status.setStyleSheet("color: #44ff88; font-size: 10px;")
+        else:
+            self._model_combo.addItem("llama3.2")  # sensible fallback
+            self._lbl_status.setText("Ollama not reachable — showing default model")
+            self._lbl_status.setStyleSheet("color: #ffaa44; font-size: 10px;")
+
+    def _on_fetch_done(self) -> None:
+        self._model_combo.setEnabled(True)
+        self._btn_refresh.setEnabled(True)
+        self._fetch_worker = None
 
     def _toggle_key_visibility(self, visible: bool) -> None:
         mode = QLineEdit.EchoMode.Normal if visible else QLineEdit.EchoMode.Password
@@ -304,15 +386,17 @@ class _SetupPanel(QGroupBox):
                 self._lbl_status.setText("⚠ Paste your API key first.")
                 self._lbl_status.setStyleSheet("color: #ffaa44; font-size: 10px;")
                 return
+            model = self._model_edit.text().strip() or p["model"]
         else:
             key = "ollama"
+            model = self._model_combo.currentText().strip() or p["model"]
 
         conn = _Connection(
             provider=p["provider"],
-            model=p["model"],
+            model=model,
             api_key=key,
             base_url=p["base_url"],
-            label=f"{name} / {p['model']}",
+            label=f"{name} / {model}",
         )
 
         self._btn_connect.setEnabled(False)
@@ -503,6 +587,33 @@ class LLMChatWidget(QWidget):
     def _on_config_changed(self, config) -> None:
         if config and self._conn is None:
             self._refresh_connection()
+
+    def accept_agent_config(
+        self, provider: str, model: str, api_key: str, base_url: str
+    ) -> None:
+        """
+        Called by AgentPanel (via llm_config_ready signal) when the pipeline
+        starts.  Synchronises the chat widget to the same LLM connection so the
+        user only needs to configure credentials once.
+        """
+        if provider == "anthropic" and api_key:
+            conn = _Connection(
+                provider="anthropic",
+                model=model or "claude-opus-4-6",
+                api_key=api_key,
+                base_url=None,
+                label=f"Anthropic / {model or 'claude-opus-4-6'} (from Agent tab)",
+            )
+            self._on_connected(conn)
+        elif provider == "ollama":
+            conn = _Connection(
+                provider="openai",
+                model=model or "llama3.2",
+                api_key="ollama",
+                base_url=(base_url or "http://localhost:11434") + "/v1",
+                label=f"Ollama / {model or 'llama3.2'} (from Agent tab)",
+            )
+            self._on_connected(conn)
 
     # ------------------------------------------------------------------
     # Chat

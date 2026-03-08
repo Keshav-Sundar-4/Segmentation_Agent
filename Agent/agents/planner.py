@@ -72,7 +72,16 @@ def planner_node(state: PipelineState) -> dict:
         ),
     ]
 
-    plan: PreprocessingPlan = llm.invoke(messages)
+    try:
+        plan: PreprocessingPlan = llm.invoke(messages)
+    except Exception as exc:
+        logger.error("Planner: LLM call failed — %s", exc)
+        return {
+            "plan_title": "",
+            "plan_steps": [],
+            "plan_rationale": "",
+            "error": f"Planner error: {exc}",
+        }
 
     logger.info(
         "Planner: plan '%s' generated with %d steps.", plan.title, len(plan.steps)
@@ -82,4 +91,5 @@ def planner_node(state: PipelineState) -> dict:
         "plan_title": plan.title,
         "plan_steps": plan.steps,
         "plan_rationale": plan.rationale,
+        "error": None,
     }

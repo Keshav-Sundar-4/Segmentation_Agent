@@ -60,6 +60,7 @@ class PipelineState(TypedDict):
     # ── Control / retry tracking ──────────────────────────────────────────────
     error: Optional[str]        # last error message; None when clean
     retries: int                # how many times coder has been re-invoked
+    max_retries: int            # caller-configurable retry budget (default 3)
 
     # ── Conversation trace ────────────────────────────────────────────────────
     # add_messages reducer: each node can append without overwriting prior msgs

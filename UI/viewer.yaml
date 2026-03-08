@@ -57,8 +57,8 @@ io:
   axes_override: null          # null = use viewer.axis_order for all samples
 
 agent:
-  command: "python run_agent.py"
-  working_dir: "."
+  command: "python run_inference.py"
+  working_dir: ".."
 
 llm:
   provider: "anthropic"        # anthropic | openai | ollama

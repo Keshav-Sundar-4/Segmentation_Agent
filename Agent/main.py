@@ -167,9 +167,10 @@ def _make_initial_state(
         "execution_success":      False,
         "validated_dependencies": [],
         # ── Control ───────────────────────────────────────────────────────────
-        "error":   None,
-        "retries": 0,
-        "messages": [],
+        "error":       None,
+        "retries":     0,
+        "max_retries": 3,
+        "messages":    [],
     }
 
 
@@ -225,6 +226,7 @@ def run_pipeline(
     # ── Graph options ─────────────────────────────────────────────────────────
     thread_id: str = "default",
     checkpointer: bool = False,
+    max_retries: int = 3,
 ) -> dict:
     """
     Execute the full preprocessing pipeline and return the final state.
@@ -278,6 +280,7 @@ def run_pipeline(
         llm_base_url=llm_base_url or "",
         api_key=api_key or "",
     )
+    initial["max_retries"] = max_retries
 
     try:
         graph = build_graph(checkpointer=checkpointer)
@@ -310,12 +313,15 @@ def run_pipeline_stream(
     # ── Graph options ─────────────────────────────────────────────────────────
     thread_id: str = "default",
     checkpointer: bool = False,
+    max_retries: int = 3,
+    stream_tokens: bool = True,
 ) -> Iterator[tuple[str, dict]]:
     """
     Stream node-by-node state snapshots as the pipeline executes.
 
-    Yields ``(node_name, state_delta)`` tuples.  Useful for the Napari
-    worker thread to surface progress updates without blocking the UI.
+    Yields ``(node_name, state_delta)`` tuples for node completions, plus
+    ``("_token", {"node": str, "token": str})`` tuples for individual LLM
+    output tokens when ``stream_tokens=True`` (the default).
 
     See ``run_pipeline`` for parameter documentation.
     """
@@ -337,15 +343,43 @@ def run_pipeline_stream(
         llm_base_url=llm_base_url or "",
         api_key=api_key or "",
     )
+    initial["max_retries"] = max_retries
 
     try:
         graph = build_graph(checkpointer=checkpointer)
         config = {"configurable": {"thread_id": thread_id}}
 
-        for chunk in graph.stream(initial, config=config):
-            # chunk is {node_name: state_delta}
-            for node_name, state_delta in chunk.items():
-                yield node_name, state_delta
+        if stream_tokens:
+            # stream_mode list yields (mode, data) tuples:
+            #   "messages" → (AIMessageChunk, metadata_dict)
+            #   "updates"  → {node_name: state_delta}
+            for mode, data in graph.stream(
+                initial, config=config,
+                stream_mode=["updates", "messages"],
+            ):
+                if mode == "messages":
+                    msg_chunk, metadata = data
+                    node = metadata.get("langgraph_node", "")
+                    # Extract text content — str for most models,
+                    # list of content blocks for Anthropic tool-use.
+                    content = ""
+                    raw = getattr(msg_chunk, "content", "")
+                    if isinstance(raw, str):
+                        content = raw
+                    elif isinstance(raw, list):
+                        for block in raw:
+                            if isinstance(block, dict):
+                                content += block.get("partial_json", "")
+                                content += block.get("text", "")
+                    if content and node:
+                        yield "_token", {"node": node, "token": content}
+                elif mode == "updates":
+                    for node_name, state_delta in data.items():
+                        yield node_name, state_delta
+        else:
+            for chunk in graph.stream(initial, config=config):
+                for node_name, state_delta in chunk.items():
+                    yield node_name, state_delta
     finally:
         shutil.rmtree(sample_dir, ignore_errors=True)
         logger.info("Auto-sampling: cleaned up sample_dir=%r.", sample_dir)

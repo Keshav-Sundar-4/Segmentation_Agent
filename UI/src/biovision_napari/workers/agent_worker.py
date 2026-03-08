@@ -120,6 +120,7 @@ def run_biovision_agent_worker(
     llm_model: str,
     llm_api_key: str = "",
     llm_base_url: str = "",
+    max_retries: int = 3,
 ):
     """
     Run the BioVision preprocessing pipeline in a background thread.
@@ -150,7 +151,10 @@ def run_biovision_agent_worker(
     if llm_provider == "ollama":
         from biovision_napari.services import ollama_runtime as _ort  # noqa: PLC0415
 
-        _base = llm_base_url or _ort.DEFAULT_BASE_URL
+        # Strip the OpenAI-compat /v1 suffix if present — Ollama's own API
+        # lives at the root (e.g. /api/tags), not under /v1.
+        _raw_base = (llm_base_url or _ort.DEFAULT_BASE_URL).rstrip("/")
+        _base = _raw_base[:-3] if _raw_base.endswith("/v1") else _raw_base
         _model = llm_model.strip() or _ort.DEFAULT_MODEL
 
         if not _ort.is_ollama_installed():
@@ -195,5 +199,7 @@ def run_biovision_agent_worker(
         llm_model=llm_model,
         llm_api_key=llm_api_key,
         llm_base_url=llm_base_url,
+        max_retries=max_retries,
+        stream_tokens=True,
     ):
         yield (node_name, state_delta)

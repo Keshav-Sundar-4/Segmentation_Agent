@@ -131,7 +131,10 @@ def _make_anthropic(model: str, api_key: str, temperature: float):
 
 
 def _make_ollama(model: str, base_url: str, temperature: float):
-    ollama_url = (base_url or "http://localhost:11434").rstrip("/")
+    # ChatOllama uses the native API (e.g. /api/chat), not the OpenAI-compat /v1
+    # path. Strip /v1 if the caller passed the OpenAI-compat base URL.
+    _raw = (base_url or "http://localhost:11434").rstrip("/")
+    ollama_url = _raw[:-3] if _raw.endswith("/v1") else _raw
 
     try:
         from langchain_ollama import ChatOllama

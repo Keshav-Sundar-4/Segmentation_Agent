@@ -27,7 +27,7 @@ from qtpy.QtCore import Qt
 from biovision_napari.io.mask_io import load_masks, save_masks, list_versions
 from biovision_napari.nav.scroll_controller import install_scroll_controller
 from biovision_napari.state.project_state import ProjectState
-from biovision_napari.ui.agent_panel import AgentPanel
+from biovision_napari.ui.agent_chat_panel import AgentChatPanel
 from biovision_napari.ui.bookmark_panel import BookmarkPanel
 from biovision_napari.ui.dataset_browser import DatasetBrowser
 from biovision_napari.ui.label_controls import LabelControls
@@ -99,8 +99,7 @@ class BioVisionWidget(QWidget):
         tabs.addTab(self._bookmarks, "Bookmarks")
 
         # --- Agent tab ---
-        self._agent_panel = AgentPanel(self._state)
-        self._agent_panel.agent_finished.connect(self._browser._refresh)
+        self._agent_panel = AgentChatPanel(self._state)
         tabs.addTab(self._agent_panel, "Agent")
 
         layout.addWidget(tabs)
@@ -323,6 +322,37 @@ class BioVisionWidget(QWidget):
         self._combo_version.clear()
         for v in reversed(versions):  # newest first
             self._combo_version.addItem(v)
+
+    def _on_agent_input_dir_changed(self, folder: str) -> None:
+        """
+        Auto-load images from the agent input folder into the viewer.
+        Clears existing layers and adds each supported image file as a layer.
+        Only loads the first image immediately to avoid blocking; the rest
+        are listed in the Samples tab for manual selection.
+        """
+        from pathlib import Path as _Path
+        _exts = {".tif", ".tiff", ".png", ".jpg", ".jpeg", ".bmp"}
+        try:
+            images = sorted(
+                p for p in _Path(folder).iterdir()
+                if p.is_file() and p.suffix.lower() in _exts
+            )
+        except Exception:
+            return
+        if not images:
+            return
+        # Load only the first image automatically; show count in viewer title.
+        axis_order = "YX"
+        cfg = self._state.config
+        if cfg is not None:
+            axis_order = cfg.viewer.axis_order
+        worker = load_image_worker(images[0], axis_order)
+        worker.yielded.connect(
+            lambda arr: self._on_image_loaded(arr, images[0].stem, axis_order)
+        )
+        worker.errored.connect(lambda exc: None)  # silently ignore load errors
+        worker.start()
+        self._current_worker = worker
 
     def _collect_label_layers(self) -> dict[str, np.ndarray]:
         result = {}

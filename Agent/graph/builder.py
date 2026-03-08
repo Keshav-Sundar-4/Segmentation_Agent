@@ -61,7 +61,8 @@ from ..tools.executor import exec_sandboxed
 
 logger = logging.getLogger("biovision.graph")
 
-# Maximum number of coder retries after sandbox execution failures.
+# Default maximum number of coder retries after sandbox execution failures.
+# Overridden at runtime by state["max_retries"] if set.
 MAX_RETRIES = 3
 
 # Use Docker for sandbox execution when this env-var is set to "1".
@@ -169,6 +170,26 @@ def terminal_failure_node(state: PipelineState) -> dict:
 # ── Routing functions ─────────────────────────────────────────────────────────
 
 
+def _route_after_planner(
+    state: PipelineState,
+) -> Literal["coder", "terminal_failure"]:
+    """After planning: if the planner recorded an error, abort immediately."""
+    if state.get("error"):
+        logger.error("Planner failed — routing to terminal_failure.")
+        return "terminal_failure"
+    return "coder"
+
+
+def _route_after_coder(
+    state: PipelineState,
+) -> Literal["sandbox_executor", "terminal_failure"]:
+    """After coding: if the coder recorded an error, abort immediately."""
+    if state.get("error"):
+        logger.error("Coder failed — routing to terminal_failure.")
+        return "terminal_failure"
+    return "sandbox_executor"
+
+
 def _route_after_sandbox(
     state: PipelineState,
 ) -> Literal["coder", "local_executor", "terminal_failure"]:
@@ -182,17 +203,18 @@ def _route_after_sandbox(
         return "local_executor"
 
     retries = state.get("retries", 0)
-    if retries < MAX_RETRIES:
+    max_retries = state.get("max_retries", MAX_RETRIES)
+    if retries < max_retries:
         logger.info(
             "SandboxExecutor: routing back to Coder (attempt %d/%d).",
             retries,
-            MAX_RETRIES,
+            max_retries,
         )
         return "coder"
 
     logger.error(
         "SandboxExecutor: max retries (%d) reached. Terminating — full dataset untouched.",
-        MAX_RETRIES,
+        max_retries,
     )
     return "terminal_failure"
 
@@ -228,8 +250,20 @@ def build_graph(*, checkpointer: bool = False):
 
     # ── Edges ──────────────────────────────────────────────────────────────────
     graph.set_entry_point("planner")
-    graph.add_edge("planner", "coder")
-    graph.add_edge("coder",   "sandbox_executor")
+
+    # Planner may fail (LLM error, bad structured output) → terminal_failure
+    graph.add_conditional_edges(
+        "planner",
+        _route_after_planner,
+        {"coder": "coder", "terminal_failure": "terminal_failure"},
+    )
+
+    # Coder may fail → terminal_failure
+    graph.add_conditional_edges(
+        "coder",
+        _route_after_coder,
+        {"sandbox_executor": "sandbox_executor", "terminal_failure": "terminal_failure"},
+    )
 
     # Conditional: sandbox may loop back to coder or abort to terminal_failure.
     graph.add_conditional_edges(
